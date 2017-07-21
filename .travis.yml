@@ -6,10 +6,11 @@ before_install:
   - wget http://downloads.arduino.cc/arduino-1.8.1-linux64.tar.xz
   - wget https://github.com/opentrv/OTRadioLink/archive/master.zip
   - wget https://github.com/opentrv/OTProtocolCC/archive/master.zip
-#  - wget https://github.com/opentrv/OTAESGCM/archive/master.zip
+  - wget https://github.com/opentrv/OTAESGCM/archive/master.zip
   - tar xf arduino-1.8.1-linux64.tar.xz
   - unzip master.zip
   - unzip master.zip.1
+  - unzip master.zip.2
   - sudo mv arduino-1.8.1 /usr/local/share/arduino
   - sudo ln -s /usr/local/share/arduino/arduino /usr/local/bin/arduino
 install:
@@ -17,7 +18,7 @@ install:
   - arduino --install-boards "opentrv:avr"
   - arduino --pref "boardsmanager.additional.urls=" --save-prefs
   - ls -al
-#  - ln -s $PWD/OTAESGCM-master/content/OTAESGCM /usr/local/share/arduino/libraries/OTAESGCM
+  - ln -s $PWD/OTAESGCM-master/content/OTAESGCM /usr/local/share/arduino/libraries/OTAESGCM
   - ln -s $PWD/OTRadioLink-master/content/OTRadioLink /usr/local/share/arduino/libraries/OTRadioLink
   - ln -s $PWD/OTProtocolCC-master/content/OTProtocolCC /usr/local/share/arduino/libraries/OTProtocolCC
 
