@@ -18,8 +18,6 @@ Author(s) / Copyright (s): Deniz Erbilgin 2017
 
 #include "OTProtocolCC.h"
 
-// Uncomment exactly one of the following CONFIG_... lines to select which board is being built for.
-//#define CONFIG_Trial2013Winter_Round2_CC1HUB // REV2 cut4 as CC1 hub.
 #define CONFIG_REV9 // REV9 as CC1 relay, cut 2 of the board.
 
 // IF DEFINED: entire comms model switches to secure.
@@ -34,7 +32,6 @@ Author(s) / Copyright (s): Deniz Erbilgin 2017
 #include <OTRFM23BLink.h>
 #include <OTRadValve.h>
 #include <OTProtocolCC.h>
-#include <OTV0p2_CONFIG_REV2.h>
 #include <OTV0p2_CONFIG_REV9.h>
 #if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
 #include <OTAESGCM.h>
@@ -86,63 +83,50 @@ void pollCLI(uint8_t maxSCT, bool startOfMinute);
 const uint8_t nearOverrunThreshold = OTV0P2BASE::GSCT_MAX - 8; // ~64ms/~32 serial TX chars of grace time...
 
 // Primary radio module.
-extern OTRadioLink::OTRadioLink &PrimaryRadio;
+static constexpr uint8_t RFM23B_RX_QUEUE_SIZE = OTRFM23BLink::DEFAULT_RFM23B_RX_QUEUE_CAPACITY;
+static constexpr int8_t RFM23B_IRQ_PIN = PIN_RFM_NIRQ;
+static constexpr bool RFM23B_allowRX = true;
+OTRFM23BLink::OTRFM23BLink<OTV0P2BASE::V0p2_PIN_SPI_nSS, RFM23B_IRQ_PIN, RFM23B_RX_QUEUE_SIZE, RFM23B_allowRX> PrimaryRadio;
+
+
+// COHEAT: REV2/REV9 talking on fast GFSK channel 0, REV9 TX to FHT8V on slow OOK.
+static const uint8_t nPrimaryRadioChannels = 2;
+static const OTRadioLink::OTRadioChannelConfig RFM23BConfigs[nPrimaryRadioChannels] =
+  {
+  // GFSK channel 0 full config, RX/TX, not in itself secure.
+  OTRadioLink::OTRadioChannelConfig(OTRFM23BLink::StandardRegSettingsGFSK57600, true),
+  // FS20/FHT8V compatible channel 1 full config, used for TX only, not secure, unframed.
+  OTRadioLink::OTRadioChannelConfig(OTRFM23BLink::StandardRegSettingsOOK5000, true, false, true, false, false, true),
+  };
 
 // Sense (usually non-linearly) over full likely internal ambient lighting range of a (UK) home,
 // down to levels too dark to be active in (and at which heating could be set back for example).
-#ifdef ENABLE_AMBLIGHT_SENSOR
 // Sensor for ambient light level; 0 is dark, 255 is bright.
 typedef OTV0P2BASE::SensorAmbientLight AmbientLight;
-#else // !defined(ENABLE_AMBLIGHT_SENSOR)
-typedef OTV0P2BASE::DummySensorAmbientLight AmbientLight; // Dummy stand-in.
-#endif // ENABLE_AMBLIGHT_SENSOR
+// Normal 2 bit shift between raw and externally-presented values.
+static const uint8_t shiftRawScaleTo8Bit = 2;
+// This implementation expects a phototransitor TEPT4400 (50nA dark current, nominal 200uA@100lx@Vce=50V) from IO_POWER_UP to LDR_SENSOR_AIN and 220k to ground.
+static const int LDR_THR_LOW = 270U;
+static const int LDR_THR_HIGH = 400U;
 // Singleton implementation/instance.
-extern AmbientLight AmbLight;
+//AmbientLight AmbLight(LDR_THR_HIGH >> shiftRawScaleTo8Bit);
+AmbientLight AmbLight;
 
-// Create very light-weight standard-speed OneWire(TM) support if a pin has been allocated to it.
-// Meant to be similar to use to OneWire library V2.2.
-// Supports search but not necessarily CRC.
-// Designed to work with 1MHz/1MIPS CPU clock.
-#if defined(ENABLE_MINIMAL_ONEWIRE_SUPPORT)
-#define SUPPORTS_MINIMAL_ONEWIRE
-extern OTV0P2BASE::MinimalOneWire<> MinOW_DEFAULT_OWDQ;
-#endif
-
-// Cannot have internal and external use of same DS18B20 at same time...
-#if defined(ENABLE_EXTERNAL_TEMP_SENSOR_DS18B20) && !defined(ENABLE_PRIMARY_TEMP_SENSOR_DS18B20) && defined(ENABLE_MINIMAL_ONEWIRE_SUPPORT)
-#define SENSOR_EXTERNAL_DS18B20_ENABLE_0 // Enable sensor zero.
-extern OTV0P2BASE::TemperatureC16_DS18B20 extDS18B20_0;
-#endif
+// FIXME REV7 periph
+// - SHT21
+// - POT
+// - Motor
 
 // Ambient/room temperature sensor, usually on main board.
-#if defined(ENABLE_PRIMARY_TEMP_SENSOR_SHT21)
-extern OTV0P2BASE::RoomTemperatureC16_SHT21 TemperatureC16; // SHT21 impl.
-#elif defined(ENABLE_PRIMARY_TEMP_SENSOR_DS18B20)
-  #if defined(ENABLE_MINIMAL_ONEWIRE_SUPPORT)
-  // DSB18B20 temperature impl, with slightly reduced precision to improve speed.
-  extern OTV0P2BASE::TemperatureC16_DS18B20 TemperatureC16;
-  #endif // defined(ENABLE_MINIMAL_ONEWIRE_SUPPORT)
-#else // Don't use TMP112 if SHT21 or DS18B20 have been selected.
-extern OTV0P2BASE::RoomTemperatureC16_TMP112 TemperatureC16;
-#endif
+OTV0P2BASE::RoomTemperatureC16_SHT21 TemperatureC16; // SHT21 impl.
 
 // HUMIDITY_SENSOR_SUPPORT is defined if at least one humidity sensor has support compiled in.
 // Simple implementations can assume that the sensor will be present if defined;
 // more sophisticated implementations may wish to make run-time checks.
 // If SHT21 support is enabled at compile-time then its humidity sensor may be used at run-time.
-#if defined(ENABLE_PRIMARY_TEMP_SENSOR_SHT21)
-#define HUMIDITY_SENSOR_SUPPORT // Humidity sensing available.
-#endif
-
-#if defined(ENABLE_PRIMARY_TEMP_SENSOR_SHT21)
 // Singleton implementation/instance.
-extern OTV0P2BASE::HumiditySensorSHT21 RelHumidity;
-#else
-// Dummy implementation to minimise coding changes.
-extern OTV0P2BASE::DummyHumiditySensorSHT21 RelHumidity;
-#endif
+OTV0P2BASE::HumiditySensorSHT21 RelHumidity;
 
-#ifdef ALLOW_CC1_SUPPORT_RELAY_IO // REV9 CC1 relay...
 // Call this on even numbered seconds (with current time in seconds) to allow the CO UI to operate.
 // Should never be skipped, so as to allow the UI to remain responsive.
 bool tickUICO(uint_fast8_t sec);
@@ -160,7 +144,6 @@ void setLEDsCO(uint8_t lc, uint8_t lt, uint8_t lf, bool fromPollAndCmd);
 // thus ensuring that the hub doesn't miss a boost request.
 // Safe to call from an ISR (though this would be unexpected).
 bool getSwitchToggleStateCO();
-#endif
 
 // Use WDT-based timer for xxxPause() routines.
 // Very tiny low-power sleep to approximately match the PICAXE V0.09 routine of the same name.
@@ -234,16 +217,13 @@ void panic()
   PrimaryRadio.panicShutdown();
   // Power down almost everything else...
   OTV0P2BASE::minimisePowerWithoutSleep();
-#ifdef LED_HEATCALL
-  pinMode(LED_HEATCALL, OUTPUT);
-#else
-  pinMode(LED_HEATCALL_L, OUTPUT);
-#endif
+
+  pinMode(OTV0P2BASE::LED_HEATCALL_L, OUTPUT);
   for( ; ; )
     {
-    LED_HEATCALL_ON();
+    OTV0P2BASE::LED_HEATCALL_ON();
     tinyPause();
-    LED_HEATCALL_OFF();
+    OTV0P2BASE::LED_HEATCALL_OFF();
     bigPause();
     }
   }
@@ -280,39 +260,6 @@ void serialPrintlnBuildVersion()
   }
 
 
-#ifdef ENABLE_AMBLIGHT_SENSOR
-// Normal 2 bit shift between raw and externally-presented values.
-static const uint8_t shiftRawScaleTo8Bit = 2;
-// This implementation expects a phototransitor TEPT4400 (50nA dark current, nominal 200uA@100lx@Vce=50V) from IO_POWER_UP to LDR_SENSOR_AIN and 220k to ground.
-static const int LDR_THR_LOW = 270U;
-static const int LDR_THR_HIGH = 400U;
-// Singleton implementation/instance.
-AmbientLight AmbLight(LDR_THR_HIGH >> shiftRawScaleTo8Bit);
-#endif // ENABLE_AMBLIGHT_SENSOR
-
-#if defined(ENABLE_MINIMAL_ONEWIRE_SUPPORT)
-OTV0P2BASE::MinimalOneWire<> MinOW_DEFAULT;
-#endif
-
-#if defined(SENSOR_EXTERNAL_DS18B20_ENABLE_0)
-// External (return pipe) DS18B20 temperature, 9 bit (0.5C) precision.
-OTV0P2BASE::TemperatureC16_DS18B20 extDS18B20_0(MinOW_DEFAULT, OTV0P2BASE::TemperatureC16_DS18B20::MIN_PRECISION);
-#endif
-
-#if defined(ENABLE_PRIMARY_TEMP_SENSOR_SHT21)
-// Singleton implementation/instance.
-OTV0P2BASE::HumiditySensorSHT21 RelHumidity;
-#else
-OTV0P2BASE::DummyHumiditySensorSHT21 RelHumidity;
-#endif
-
-// Ambient/room temperature sensor, usually on main board.
-#if defined(ENABLE_PRIMARY_TEMP_SENSOR_SHT21)
-OTV0P2BASE::RoomTemperatureC16_SHT21 TemperatureC16; // SHT21 impl.
-#else // Don't use TMP112 if SHT21 or DS18B20 are selected.
-OTV0P2BASE::RoomTemperatureC16_TMP112 TemperatureC16;
-#endif
-
 // Singleton FHT8V valve instance (to control remote FHT8V valve by radio).
 static const uint8_t _FHT8V_MAX_EXTRA_TRAILER_BYTES = (1 + max(OTV0P2BASE::MESSAGING_TRAILING_MINIMAL_STATS_PAYLOAD_BYTES, OTV0P2BASE::FullStatsMessageCore_MAX_BYTES_ON_WIRE));
 OTRadValve::FHT8VRadValve<_FHT8V_MAX_EXTRA_TRAILER_BYTES, OTRadValve::FHT8VRadValveBase::RFM23_PREAMBLE_BYTES, OTRadValve::FHT8VRadValveBase::RFM23_PREAMBLE_BYTE> FHT8V(NULL);
@@ -320,52 +267,13 @@ OTRadValve::FHT8VRadValve<_FHT8V_MAX_EXTRA_TRAILER_BYTES, OTRadValve::FHT8VRadVa
 // Returns TRV if valve/radiator is to be controlled by this unit.
 // Usually the case, but may not be for (a) a hub or (b) a not-yet-configured unit.
 // Returns false if house code parts are set to invalid or uninitialised values (>99).
-#if defined(ENABLE_LOCAL_TRV) || defined(ENABLE_SLAVE_TRV)
-inline bool localFHT8VTRVEnabled() { return(!FHT8V.isUnavailable()); }
-#else
-#define localFHT8VTRVEnabled() (false) // Local FHT8V TRV disabled.
-#endif
+inline bool localFHT8VTRVEnabled() { return(false /*!FHT8V.isUnavailable()*/ ); }
 
-#if defined(ENABLE_SLAVE_TRV)
+
 #define ENABLE_NOMINAL_RAD_VALVE
 // Simply alias directly to FHT8V for REV9 slave.
 #define NominalRadValve FHT8V
-#endif
 
-
-#if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-// TX 2 bytes of ID in each secure frame, corresponding to the FHT8V housecode.
-static const uint8_t lenTXID = 2;
-#if defined(ALLOW_CC1_SUPPORT_RELAY)
-// Support for secure TX side using FHT8V ID plus 0x80 padding from REV9 relay.
-// (High bits of trailing bytes should be high for traffic FROM node whose ID is in header.)
-// ID is of length OTV0P2BASE::OpenTRV_Node_ID_Bytes.
-static bool getTXID(uint8_t *const id)
-  {
-  id[0] = FHT8V.getHC1();
-  id[1] = FHT8V.getHC2();
-  memset(id+2, 0x80, OTV0P2BASE::OpenTRV_Node_ID_Bytes-2);
-  return(true);
-  }
-OTRadioLink::SimpleSecureFrame32or0BodyTXV0p2SuppliedID secureTXState(getTXID);
-#else
-// Support for secure TX side using FHT8V ID plus 0x80 padding from REV2 hub.
-// (High bits of trailing bytes should be low for traffic TO node whose ID is in header.)
-OTRadioLink::SimpleSecureFrame32or0BodyTXV0p2SuppliedID secureTXState(NULL);
-// Set TX ID for target; two bytes of housecode padded with zeros (for reverse traffic).
-static void setTXID(const uint8_t hc1, const uint8_t hc2)
-  {
-  uint8_t id[OTV0P2BASE::OpenTRV_Node_ID_Bytes];
-  id[0] = hc1;
-  id[1] = hc2;
-  memset(id + 2, 0, OTV0P2BASE::OpenTRV_Node_ID_Bytes - 2);
-  secureTXState.setTXID(id);
-  }
-#endif // defined(ALLOW_CC1_SUPPORT_RELAY)
-#endif // defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-
-
-#ifdef ALLOW_CC1_SUPPORT_RELAY
 // Send a CC1 Alert message with this unit's house code; returns false on failure.
 bool sendCC1Alert()
   {
@@ -401,9 +309,7 @@ bool sendCC1Alert()
   // FAILED if fallen through to here.
   return(false);
   }
-#endif // ALLOW_CC1_SUPPORT_RELAY
 
-#ifdef ALLOW_CC1_SUPPORT_RELAY
 // True if a poll response is needed.
 // Cleared upon successful send.
 static bool pollResponseNeeded;
@@ -414,12 +320,8 @@ bool sendCC1PollResponse()
   // Can use read() for very freshest values at risk of some delay/cost.
   const uint8_t hc1 = FHT8V.nvGetHC1();
   const uint8_t hc2 = FHT8V.nvGetHC2();
-#ifdef HUMIDITY_SENSOR_SUPPORT
   const uint8_t rh = RelHumidity.read() >> 1; // Scale from [0,100] to [0,50] for TX.
-#else
-  const uint8_t rh = 0; // RH% not available.
-#endif
-  const uint8_t tp = (uint8_t) constrain(extDS18B20_0.read() >> 3, 0, 199); // Scale to to 1/2C [0,100[ for TX.
+  const uint8_t tp = 0; //(uint8_t) constrain(extDS18B20_0.read() >> 3, 0, 199); // Scale to to 1/2C [0,100[ for TX.
   const uint8_t tr = (uint8_t) constrain(TemperatureC16.read() >> 2, 0, 199); // Scale from 1/16C to 1/4C [0,50[ for TX.
   const uint8_t al = AmbLight.read() >> 2; // Scale from [0,255] to [1,62] for TX (allow value coercion at extremes).
   const bool s = getSwitchToggleStateCO();
@@ -466,17 +368,12 @@ bool sendCC1PollResponse()
   // FAILED if fallen through to here.
   return(false);
   }
-#endif // ALLOW_CC1_SUPPORT_RELAY
 
-
-#ifdef ALLOW_CC1_SUPPORT_RELAY_IO // REV9 CC1 relay...
 // Do basic static LED setting.
 static void setLEDs(const uint8_t lc)
     {
     // Assume primary UI LED is the red one (at least fot REV9 boards)...
-    if(lc & 1) { LED_HEATCALL_ON(); } else { LED_HEATCALL_OFF(); }
-    // Assume secondary UI LED is the green one (at least fot REV9 boards)...
-    if(lc & 2) { LED_UI2_ON(); } else { LED_UI2_OFF(); }
+    if(lc & 1) { OTV0P2BASE::LED_HEATCALL_ON(); } else { OTV0P2BASE::LED_HEATCALL_OFF(); }
     }
 
 // Logical last-requested light colour (lc).
@@ -620,7 +517,6 @@ void setLEDsCO(const uint8_t lc, const uint8_t lt, const uint8_t lf, const bool 
     // Assume that the hub will shortly know about any pending request.
     if(fromPollAndCmd) { waitingForPollAfterBoostRequest = false; }
     }
-#endif
 
 bool pollIO(const bool force)
   {
@@ -720,80 +616,6 @@ DEBUG_SERIAL_PRINTLN_FLASHSTRING("!RX bad secure header");
     case OTRadioLink::FTp2_NONE: // Reject zero-length with leading length byte.
       break;
 
-#if defined(ALLOW_CC1_SUPPORT_HUB)
-    // Handle alert message (at hub).
-    // Dump onto serial to be seen by the attached host.
-#if !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-    // Non-secure.
-    case OTRadioLink::FTp2_CC1Alert:
-      {
-      OTProtocolCC::CC1Alert a;
-      a.OTProtocolCC::CC1Alert::decodeSimple(msg, msglen);
-      // After decode instance should be valid and with correct (source) house code.
-      if(a.isValid())
-        {
-        // Pass message to host to deal with as "! hc1 hc2" after prefix indicating relayed (CC1 alert) message.
-        p->print(F("+CC1 ! ")); p->print(a.getHC1()); p->print(' '); p->println(a.getHC2());
-        }
-      return; // OK
-      }
-#else
-    // Secure.
-    case 0x80 | OTRadioLink::FTp2_CC1Alert:
-      {
-      // Already authenticated and no body to decode.
-      // Pass message to host to deal with as "! hc1 hc2" after prefix indicating relayed (CC1 alert) message.
-      p->print(F("+CC1 ! ")); p->print(senderNodeID[0]); p->print(' '); p->println(senderNodeID[1]);
-      return; // OK
-      }
-#endif // defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-#endif // defined(ALLOW_CC1_SUPPORT_HUB)
-
-#ifdef ALLOW_CC1_SUPPORT_HUB
-    // Handle poll-response message (at hub).
-    // Dump onto serial to be seen by the attached host.
-#if !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-    case OTRadioLink::FTp2_CC1PollResponse: // Non-secure.
-#else
-    case 0x80 | OTRadioLink::FTp2_CC1PollResponse: // Secure.
-#endif // !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-      {
-      OTProtocolCC::CC1PollResponse a;
-      a.OTProtocolCC::CC1PollResponse::decodeSimple(cleartextBody, cleartextBodyLen);
-      // After decode instance should be valid and with correct (source) house code.
-      if(a.isValid())
-        {
-        // Pass message to host to deal with as:
-        //     * hc1 hc2 rh tp tr al s w sy
-        // after prefix indicating relayed (CC1) message.
-        // (Parameters in same order as make() factory method, see below.)
-//   * House code (hc1, hc2) of valve controller that the poll/command is being sent to.
-//   * relative-humidity    [0,50] 0-100 in 2% steps (rh)
-//   * temperature-ds18b20  [0,199] 0.000-99.999C in 1/2 C steps, pipe temp (tp)
-//   * temperature-opentrv  [0,199] 0.000-49.999C in 1/4 C steps, room temp (tr)
-//   * ambient-light        [1,62] no units, dark to light (al)
-//   * switch               [false,true] activation toggle, helps async poll detect intermittent use (s)
-//   * window               [false,true] false=closed,true=open (w)
-//   * syncing              [false,true] if true, (re)syncing to FHT8V (sy)
-// Returns instance; check isValid().
-//            static CC1PollResponse make(uint8_t hc1, uint8_t hc2,
-//                                        uint8_t rh,
-//                                        uint8_t tp, uint8_t tr,
-//                                        uint8_t al,
-//                                        bool s, bool w, bool sy);
-        p->print(F("+CC1 * "));
-            p->print(a.getHC1()); p->print(' '); p->print(a.getHC2()); p->print(' ');
-            p->print(a.getRH()); p->print(' ');
-            p->print(a.getTP()); p->print(' '); p->print(a.getTR()); p->print(' ');
-            p->print(a.getAL()); p->print(' ');
-            p->print(a.getS()); p->print(' '); p->print(a.getW()); p->print(' ');
-               p->println(a.getSY());
-        }
-      return;
-      }
-#endif
-
-#ifdef ALLOW_CC1_SUPPORT_RELAY
     // Handle poll/cmd message (at relay).
     // IFF this message is addressed to this (target) unit's house code
     // then action the commands and respond (quickly) with a poll response.
@@ -826,7 +648,6 @@ DEBUG_SERIAL_PRINTLN_FLASHSTRING("!RX bad secure header");
         }
       return;
       }
-#endif // ALLOW_CC1_SUPPORT_RELAY
     }
 
   // Unparseable frame: drop it; possibly log it as an error.
@@ -1018,16 +839,8 @@ ISR(PCINT2_vect)
   }
 #endif
 
-static const uint8_t RFM23B_RX_QUEUE_SIZE = OTRFM23BLink::DEFAULT_RFM23B_RX_QUEUE_CAPACITY;
-static const int8_t RFM23B_IRQ_PIN = PIN_RFM_NIRQ;
-static const bool RFM23B_allowRX = true;
-OTRFM23BLink::OTRFM23BLink<PIN_SPI_nSS, RFM23B_IRQ_PIN, RFM23B_RX_QUEUE_SIZE, RFM23B_allowRX> RFM23B;
-// Assigns radio to PrimaryRadio alias.
-OTRadioLink::OTRadioLink &PrimaryRadio = RFM23B;
-
 // Quickly screen/filter RX traffic to preserve queue space for stuff likely to be of interest.
 // If in doubt, accept a frame, ie should not reject incorrectly.
-#if defined(ALLOW_CC1_SUPPORT_RELAY)
 // For a CC1 relay, ignore everything except FTp2_CC1PollAndCmd messages.
 // With care (not accessing EEPROM for example) this can also reject anything with wrong house code.
 static bool FilterRXISR(const volatile uint8_t *buf, volatile uint8_t &buflen)
@@ -1045,35 +858,6 @@ static bool FilterRXISR(const volatile uint8_t *buf, volatile uint8_t &buflen)
 #endif // ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
   return(true); // Accept message.
   }
-#elif defined(ALLOW_CC1_SUPPORT_HUB)
-// For a CC1 hub, ignore everything except FTp2_CC1Alert and FTp2_CC1PollResponse messages.
-static bool FilterRXISR(const volatile uint8_t *buf, volatile uint8_t &buflen)
-  {
-#ifndef ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
-  if(buflen < 8) { return(false); }
-  const uint8_t t = buf[0];
-  if((OTRadioLink::FTp2_CC1Alert != t) && (OTRadioLink::FTp2_CC1PollResponse != t)) { return(false); }
-  // TODO: filter for only associated relay address/housecodes.
-#else
-  // Expect secure frame with 2-byte ID and 0- or 32-byte encrypted body.
-  if(buflen < 28) { return(false); }
-  const uint8_t t = buf[0];
-  if(((0x80|OTRadioLink::FTp2_CC1Alert) != t) && ((0x80|OTRadioLink::FTp2_CC1PollResponse) != t)) { return(false); }
-  // TODO: filter for only associated relay address/housecodes.
-#endif // ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
-  return(true); // Accept message.
-  }
-#endif
-
-// COHEAT: REV2/REV9 talking on fast GFSK channel 0, REV9 TX to FHT8V on slow OOK.
-static const uint8_t nPrimaryRadioChannels = 2;
-static const OTRadioLink::OTRadioChannelConfig RFM23BConfigs[nPrimaryRadioChannels] =
-  {
-  // GFSK channel 0 full config, RX/TX, not in itself secure.
-  OTRadioLink::OTRadioChannelConfig(OTRFM23BLink::StandardRegSettingsGFSK57600, true),
-  // FS20/FHT8V compatible channel 1 full config, used for TX only, not secure, unframed.
-  OTRadioLink::OTRadioChannelConfig(OTRFM23BLink::StandardRegSettingsOOK5000, true, false, true, false, false, true),
-  };
 
 // Sends a short 1-line CRLF-terminated status report on the serial connection (at 'standard' baud).
 void serialStatusReport()
@@ -1132,10 +916,8 @@ void serialStatusReport()
 //
 // It is acceptable for extCLIHandler() to alter the buffer passed,
 // eg with strtok_t().
-static bool extCLIHandler(Print *const p, char *const buf, const uint8_t n)
+static bool extCLIHandler(Print *p, char *const buf, const uint8_t n)
   {
-
-#ifdef ALLOW_CC1_SUPPORT_RELAY
   // If CC1 relay then allow +CC1 ! command to send an alert to the hub.
   // Full command is:
   //    +CC1 !
@@ -1147,83 +929,6 @@ static bool extCLIHandler(Print *const p, char *const buf, const uint8_t n)
     // Send the alert!
     return(sendCC1Alert());
     }
-#endif
-
-#ifdef ALLOW_CC1_SUPPORT_HUB
-  // If CC1 hub then allow +CC1 ? command to poll a remote relay.
-  // Full command is:
-  //    +CC1 ? hc1 hc2 rp lc lt lf
-  // ie six numeric arguments, see below, with out-of-range values coerced (other than housecodes):
-//            // Factory method to create instance.
-//            // Invalid parameters (except house codes) will be coerced into range.
-//            //   * House code (hc1, hc2) of valve controller that the poll/command is being sent to.
-//            //   * rad-open-percent     [0,100] 0-100 in 1% steps, percent open approx to set rad valve (rp)
-//            //   * light-colour         [0,3] bit flags 1==red 2==green (lc) 0 => stop everything
-//            //   * light-on-time        [1,15] (0 not allowed) 30-450s in units of 30s (lt) ???
-//            //   * light-flash          [1,3] (0 not allowed) 1==single 2==double 3==on (lf)
-//            // Returns instance; check isValid().
-//            static CC1PollAndCommand make(uint8_t hc1, uint8_t hc2,
-//                                          uint8_t rp,
-//                                          uint8_t lc, uint8_t lt, uint8_t lf);
-  const uint8_t CC1_Q_PREFIX_LEN = 7;
-  const uint8_t CC1_Q_PARAMS = 6;
-  // Falling through rather than return(true) indicates failure.
-  if((n >= CC1_Q_PREFIX_LEN) && (0 == strncmp("+CC1 ? ", buf, CC1_Q_PREFIX_LEN)))
-    {
-    char *last; // Used by strtok_r().
-    char *tok1;
-    // Attempt to parse the parameters.
-    if((n-CC1_Q_PREFIX_LEN >= CC1_Q_PARAMS*2-1) && (NULL != (tok1 = strtok_r(buf+CC1_Q_PREFIX_LEN, " ", &last))))
-      {
-      char *tok2 = strtok_r(NULL, " ", &last);
-      char *tok3 = (NULL == tok2) ? NULL : strtok_r(NULL, " ", &last);
-      char *tok4 = (NULL == tok3) ? NULL : strtok_r(NULL, " ", &last);
-      char *tok5 = (NULL == tok4) ? NULL : strtok_r(NULL, " ", &last);
-      char *tok6 = (NULL == tok5) ? NULL : strtok_r(NULL, " ", &last);
-      if(NULL != tok6)
-        {
-        OTProtocolCC::CC1PollAndCommand q = OTProtocolCC::CC1PollAndCommand::make(
-            atoi(tok1),
-            atoi(tok2),
-            atoi(tok3),
-            atoi(tok4),
-            atoi(tok5),
-            atoi(tok6));
-        if(q.isValid())
-          {
-          uint8_t txbuf[OTProtocolCC::CC1PollAndCommand::primary_frame_bytes+1]; // More than large enough for preamble + sync + alert message.
-          const uint8_t bodylen = q.encodeSimple(txbuf, sizeof(txbuf), true);
-#if !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-          // Non-secure: send raw frame as-is.
-          // TX at normal power since ACKed and can be repeated if necessary.
-          if(PrimaryRadio.sendRaw(txbuf, bodylen))
-            { return(true); } // Success!
-#else
-          // Secure: wrap frame in encrypted layer...
-          uint8_t key[16];
-          if(!OTV0P2BASE::getPrimaryBuilding16ByteSecretKey(key))
-            { OTV0P2BASE::serialPrintlnAndFlush(F("!TX key")); return(false); } // FAIL
-          const OTRadioLink::SimpleSecureFrame32or0BodyTXBase::fixed32BTextSize12BNonce16BTagSimpleEnc_ptr_t e = OTAESGCM::fixed32BTextSize12BNonce16BTagSimpleEnc_DEFAULT_STATELESS;
-          // Hub must indicate which relay it is sending (reverse traffic) to.
-          setTXID(q.getHC1(), q.getHC2());
-          uint8_t sbuf[OTRadioLink::SecurableFrameHeader::maxSmallFrameSize];
-          const uint8_t sbodylen = secureTXState.generateSecureOStyleFrameForTX(sbuf, sizeof(sbuf), OTRadioLink::FTS_RESERVED_Q, lenTXID, txbuf, bodylen, e, NULL, key);
-          const bool success = (0 != sbodylen) && PrimaryRadio.sendRaw(sbuf+1, sbodylen-1);
-#if 1 && defined(DEBUG)
-          if(!success) { OTV0P2BASE::serialPrintlnAndFlush(F("!TX Q")); }
-          else { OTV0P2BASE::serialPrintlnAndFlush(F("TX Q")); }
-#endif
-          if(success) { return(true); }
-#endif // !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-          // Fall-through is failure...
-          OTV0P2BASE::serialPrintlnAndFlush(F("!TX fail"));
-          }
-        }
-      }
-    return(false); // FAILED if fallen through from above.
-    }
-#endif
-
   return(false); // FAILED if not otherwise handled.
   }
 
@@ -1239,11 +944,8 @@ void resetCLIActiveTimer() { CLITimeoutM = CLI_DEFAULT_TIMEOUT_M; }
 // Returns true if the CLI is active, at least intermittently.
 // Thread-safe.
 bool isCLIActive() { return(0 != CLITimeoutM); }
-#if defined(ENABLE_EXTENDED_CLI) || defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
 static const uint8_t MAXIMUM_CLI_RESPONSE_CHARS = 1 + OTV0P2BASE::CLI::MAX_TYPICAL_CLI_BUFFER;
-#else
-static const uint8_t MAXIMUM_CLI_RESPONSE_CHARS = 1 + OTV0P2BASE::CLI::MIN_TYPICAL_CLI_BUFFER;
-#endif
+
 // Used to poll user side for CLI input until specified sub-cycle time.
 // Commands should be sent terminated by CR *or* LF; both may prevent 'E' (exit) from working properly.
 // A period of less than (say) 500ms will be difficult for direct human response on a raw terminal.
@@ -1294,12 +996,10 @@ void pollCLI(const uint8_t maxSCT, const bool startOfMinute)
       // else the second will wake the CLI up again.
       case 'E': { CLITimeoutM = 0; break; }
 
-#if defined(ENABLE_FHT8VSIMPLE) && (defined(ENABLE_LOCAL_TRV) || defined(ENABLE_SLAVE_TRV))
       // H [nn nn]
       // Set (non-volatile) HC1 and HC2 for single/primary FHT8V wireless valve under control.
       // Missing values will clear the code entirely (and disable use of the valve).
       case 'H': { showStatus = OTRadValve::FHT8VRadValveBase::SetHouseCode(&FHT8V).doCommand(buf, n); break; }
-#endif
 
 #if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
       // Set secret key.
@@ -1319,7 +1019,6 @@ void pollCLI(const uint8_t maxSCT, const bool startOfMinute)
         break; // Note that status is by default printed after processing input line.
         }
 
-#ifdef ENABLE_EXTENDED_CLI
       // Handle CLI extension commands.
       // Command of form:
       //   +EXT .....
@@ -1333,7 +1032,6 @@ void pollCLI(const uint8_t maxSCT, const bool startOfMinute)
         Serial.println(success ? F("OK") : F("FAILED"));
         break;
         }
-#endif
       }
 
     // Almost always show status line afterwards as feedback of command received and new state.
@@ -1359,15 +1057,8 @@ void setup()
   OTV0P2BASE::IOSetup();
   // Restore previous RTC state if available.
   OTV0P2BASE::restoreRTC();
-#if defined(LED_UI2_EXISTS) && defined(ENABLE_UI_LED_2_IF_AVAILABLE)
-  LED_UI2_ON();
-#endif
   OTV0P2BASE::serialPrintAndFlush(F("\r\nOpenTRV: ")); // Leading CRLF to clear leading junk, eg from bootloader.
     serialPrintlnBuildVersion();
-#if defined(LED_UI2_EXISTS) && defined(ENABLE_UI_LED_2_IF_AVAILABLE)
-  OTV0P2BASE::nap(WDTO_120MS); // Sleep to let UI2 LED be seen.
-  LED_UI2_OFF();
-#endif
 
   // Count resets to detect unexpected crashes/restarts.
   const uint8_t oldResetCount = eeprom_read_byte((uint8_t *)V0P2BASE_EE_START_RESET_COUNT);
@@ -1380,7 +1071,6 @@ void setup()
   DEBUG_SERIAL_PRINT_FLASHSTRING("Resets: ");
   DEBUG_SERIAL_PRINT(oldResetCount);
   DEBUG_SERIAL_PRINTLN();
-#if !defined(ALT_MAIN_LOOP) && !defined(UNIT_TESTS)
   const uint8_t overruns = (~eeprom_read_byte((uint8_t *)V0P2BASE_EE_START_OVERRUN_COUNTER)) & 0xff;
   if(0 != overruns)
     {
@@ -1388,7 +1078,6 @@ void setup()
     DEBUG_SERIAL_PRINT(overruns);
     DEBUG_SERIAL_PRINTLN();
     }
-#endif
 
   // Have 32678Hz clock at least running before going any further.
   if(!::OTV0P2BASE::HWTEST::check32768HzOsc()) { panic(F("xtal")); } // Async clock not running correctly.
@@ -1401,9 +1090,7 @@ void setup()
   // Check that the radio is correctly connected; panic if not...
   if(!PrimaryRadio.configure(nPrimaryRadioChannels, RFM23BConfigs) || !PrimaryRadio.begin()) { panic(F("r1")); }
   // Apply filtering, if any, while we're having fun...
-#ifndef NO_RX_FILTER
   PrimaryRadio.setFilterRXISR(FilterRXISR);
-#endif // NO_RX_FILTER
 
 //  posPOST(1, F("Radio OK, checking buttons/sensors and xtal"));
 
@@ -1420,7 +1107,7 @@ void setup()
     }
 
   // Initialised: turn main/heatcall UI LED off.
-  LED_HEATCALL_OFF();
+  OTV0P2BASE::LED_HEATCALL_OFF();
 
   // Report initial status.
   serialStatusReport();
@@ -1469,15 +1156,11 @@ void setup()
   // Start anywhere in first 4 minute cycle.
   minuteCount = b & 3;
 
-#ifdef ENABLE_FHT8VSIMPLE
   // Set up radio with FHT8V.
   FHT8V.setRadio(&PrimaryRadio);
   // Load EEPROM house codes into primary FHT8V instance at start.
   FHT8V.nvLoadHC();
-#ifdef ALLOW_CC1_SUPPORT
   FHT8V.setChannelTX(1);
-#endif // ALLOW_CC1_SUPPORT
-#endif // ENABLE_FHT8VSIMPLE
 
   // Start listening.
   PrimaryRadio.listen(true);
@@ -1500,10 +1183,8 @@ void loop()
     // Poll I/O and process message incrementally (in this otherwise idle time).
     // Come back and have another go immediately until no work remaining.
     if(handleQueuedMessages(&Serial, true, &PrimaryRadio)) { continue; }
-#if defined(ALLOW_CC1_SUPPORT_RELAY)
     // Handle any pending poll response needed.
     if(pollResponseNeeded && timeToHandleMessage()) { sendCC1PollResponse(); continue; }
-#endif
 
     // Normal long minimal-power sleep until wake-up interrupt.
     // Rely on interrupt to force quick loop round to I/O poll.
@@ -1511,24 +1192,19 @@ void loop()
     }
   TIME_LSD = newTLSD;
 
-#if defined(ENABLE_WATCHDOG_SLOW)
   // Reset and immediately re-prime the RTC-based watchdog.
   OTV0P2BASE::resetRTCWatchDog();
   OTV0P2BASE::enableRTCWatchdog(true);
-#endif
 
   // Use the zeroth second in each minute to force extra deep device sleeps/resets, etc.
   const bool second0 = (0 == TIME_LSD);
 
-#ifdef ALLOW_CC1_SUPPORT_RELAY_IO // REV9 CC1 relay...
     // Run the CC1 relay UI.
     if(tickUICO(TIME_LSD))
       {
 //      showStatus = true;
       }
-#endif
 
-#if defined(ENABLE_FHT8VSIMPLE)
   // Try for double TX for more robust conversation with valve?
   const bool doubleTXForFTH8V = false;
   // FHT8V is highest priority and runs first.
@@ -1552,16 +1228,13 @@ void loop()
     // ---------- HALF SECOND #3 -----------
     useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_Next(doubleTXForFTH8V);
     }
-#endif
 
   // If time to do some trailing processing, CLI, etc...
   while(timeToHandleMessage())
     {
     if(handleQueuedMessages(&Serial, true, &PrimaryRadio)) { continue; }
-#if defined(ALLOW_CC1_SUPPORT_RELAY)
     // Handle any pending poll response needed.
     if(pollResponseNeeded && timeToHandleMessage()) { sendCC1PollResponse(); continue; }
-#endif
     // Done queued work...
     // Command-Line Interface (CLI) polling, if still active.
     if(isCLIActive())
@@ -1584,9 +1257,7 @@ void loop()
 #if 1 && defined(DEBUG)
     DEBUG_SERIAL_PRINTLN_FLASHSTRING("!loop overrun");
 #endif
-#if defined(ENABLE_FHT8VSIMPLE)
     FHT8V.resyncWithValve(); // Assume that sync with valve may have been lost, so re-sync.
-#endif
     TIME_LSD = OTV0P2BASE::getSecondsLT(); // Prepare to sleep until start of next full minor cycle.
     }
   }
