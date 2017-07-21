@@ -16,6 +16,8 @@ under the Licence.
 Author(s) / Copyright (s): Deniz Erbilgin 2017
 */
 
+#include "OTProtocolCC.h"
+
 void setup()
 {
 
