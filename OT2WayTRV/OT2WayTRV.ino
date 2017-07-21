@@ -38,10 +38,31 @@ Author(s) / Copyright (s): Deniz Erbilgin 2017
 #endif
 #include <OTV0p2_Board_IO_Config.h> // I/O pin allocation and setup: include ahead of I/O module headers.
 
-#define ENABLE_HUB_LISTEN
 // Force-enable always-on RX if not already so.
 #define ENABLE_RADIO_RX
 #define ENABLE_CONTINUOUS_RX
+
+#ifndef DEBUG
+#define DEBUG_SERIAL_PRINT(s) // Do nothing.
+#define DEBUG_SERIAL_PRINTFMT(s, format) // Do nothing.
+#define DEBUG_SERIAL_PRINT_FLASHSTRING(fs) // Do nothing.
+#define DEBUG_SERIAL_PRINTLN_FLASHSTRING(fs) // Do nothing.
+#define DEBUG_SERIAL_PRINTLN() // Do nothing.
+#define DEBUG_SERIAL_TIMESTAMP() // Do nothing.
+#else
+// Send simple string or numeric to serial port and wait for it to have been sent.
+// Make sure that Serial.begin() has been invoked, etc.
+#define DEBUG_SERIAL_PRINT(s) { OTV0P2BASE::serialPrintAndFlush(s); }
+#define DEBUG_SERIAL_PRINTFMT(s, fmt) { OTV0P2BASE::serialPrintAndFlush((s), (fmt)); }
+#define DEBUG_SERIAL_PRINT_FLASHSTRING(fs) { OTV0P2BASE::serialPrintAndFlush(F(fs)); }
+#define DEBUG_SERIAL_PRINTLN_FLASHSTRING(fs) { OTV0P2BASE::serialPrintlnAndFlush(F(fs)); }
+#define DEBUG_SERIAL_PRINTLN() { OTV0P2BASE::serialPrintlnAndFlush(); }
+// Print timestamp with no newline in format: MinutesSinceMidnight:Seconds:SubCycleTime
+extern void _debug_serial_timestamp();
+#define DEBUG_SERIAL_TIMESTAMP() _debug_serial_timestamp()
+#endif // DEBUG
+
+//---------------------
 
 // Indicate that the system is broken in an obvious way (distress flashing of the main UI LED).
 // DOES NOT RETURN.
@@ -80,7 +101,7 @@ bool isCLIActive();
 // NOT RENTRANT (eg uses static state for speed and code space).
 void pollCLI(uint8_t maxSCT, bool startOfMinute);
 
-const uint8_t nearOverrunThreshold = OTV0P2BASE::GSCT_MAX - 8; // ~64ms/~32 serial TX chars of grace time...
+static constexpr uint8_t nearOverrunThreshold = OTV0P2BASE::GSCT_MAX - 8; // ~64ms/~32 serial TX chars of grace time...
 
 // Primary radio module.
 static constexpr uint8_t RFM23B_RX_QUEUE_SIZE = OTRFM23BLink::DEFAULT_RFM23B_RX_QUEUE_CAPACITY;
@@ -90,24 +111,24 @@ OTRFM23BLink::OTRFM23BLink<OTV0P2BASE::V0p2_PIN_SPI_nSS, RFM23B_IRQ_PIN, RFM23B_
 
 
 // COHEAT: REV2/REV9 talking on fast GFSK channel 0, REV9 TX to FHT8V on slow OOK.
-static const uint8_t nPrimaryRadioChannels = 2;
+static constexpr uint8_t nPrimaryRadioChannels = 2;
 static const OTRadioLink::OTRadioChannelConfig RFM23BConfigs[nPrimaryRadioChannels] =
-  {
-  // GFSK channel 0 full config, RX/TX, not in itself secure.
-  OTRadioLink::OTRadioChannelConfig(OTRFM23BLink::StandardRegSettingsGFSK57600, true),
-  // FS20/FHT8V compatible channel 1 full config, used for TX only, not secure, unframed.
-  OTRadioLink::OTRadioChannelConfig(OTRFM23BLink::StandardRegSettingsOOK5000, true, false, true, false, false, true),
-  };
+{
+    // GFSK channel 0 full config, RX/TX, not in itself secure.
+    OTRadioLink::OTRadioChannelConfig(OTRFM23BLink::StandardRegSettingsGFSK57600, true),
+    // FS20/FHT8V compatible channel 1 full config, used for TX only, not secure, unframed.
+    OTRadioLink::OTRadioChannelConfig(OTRFM23BLink::StandardRegSettingsOOK5000, true, false, true, false, false, true),
+};
 
 // Sense (usually non-linearly) over full likely internal ambient lighting range of a (UK) home,
 // down to levels too dark to be active in (and at which heating could be set back for example).
 // Sensor for ambient light level; 0 is dark, 255 is bright.
 typedef OTV0P2BASE::SensorAmbientLight AmbientLight;
 // Normal 2 bit shift between raw and externally-presented values.
-static const uint8_t shiftRawScaleTo8Bit = 2;
+static constexpr uint8_t shiftRawScaleTo8Bit = 2;
 // This implementation expects a phototransitor TEPT4400 (50nA dark current, nominal 200uA@100lx@Vce=50V) from IO_POWER_UP to LDR_SENSOR_AIN and 220k to ground.
-static const int LDR_THR_LOW = 270U;
-static const int LDR_THR_HIGH = 400U;
+static constexpr int LDR_THR_LOW = 270U;
+static constexpr int LDR_THR_HIGH = 400U;
 // Singleton implementation/instance.
 //AmbientLight AmbLight(LDR_THR_HIGH >> shiftRawScaleTo8Bit);
 AmbientLight AmbLight;
@@ -146,60 +167,29 @@ void setLEDsCO(uint8_t lc, uint8_t lt, uint8_t lf, bool fromPollAndCmd);
 bool getSwitchToggleStateCO();
 
 // Use WDT-based timer for xxxPause() routines.
-// Very tiny low-power sleep to approximately match the PICAXE V0.09 routine of the same name.
-#define VERYTINY_PAUSE_MS 5
-static void inline veryTinyPause() { OTV0P2BASE::sleepLowPowerMs(VERYTINY_PAUSE_MS); }
 // Tiny low-power sleep to approximately match the PICAXE V0.09 routine of the same name.
-#define TINY_PAUSE_MS 15
 static void inline tinyPause() { OTV0P2BASE::nap(WDTO_15MS); } // 15ms vs 18ms nominal for PICAXE V0.09 impl.
-// Small low-power sleep.
-#define SMALL_PAUSE_MS 30
-static void inline smallPause() { OTV0P2BASE::nap(WDTO_30MS); }
 // Medium low-power sleep to approximately match the PICAXE V0.09 routine of the same name.
 // Premature wakeups MAY be allowed to avoid blocking I/O polling for too long.
-#define MEDIUM_PAUSE_MS 60
 static void inline mediumPause() { OTV0P2BASE::nap(WDTO_60MS); } // 60ms vs 144ms nominal for PICAXE V0.09 impl.
 // Big low-power sleep to approximately match the PICAXE V0.09 routine of the same name.
 // Premature wakeups MAY be allowed to avoid blocking I/O polling for too long.
-#define BIG_PAUSE_MS 120
 static void inline bigPause() { OTV0P2BASE::nap(WDTO_120MS); } // 120ms vs 288ms nominal for PICAXE V0.09 impl.
 // Pause between flashes to allow them to be distinguished (>100ms); was mediumPause() for PICAXE V0.09 impl.
 static void inline offPause() { bigPause(); pollIO(); }
 
 //---------------------
 
-#ifndef DEBUG
-#define DEBUG_SERIAL_PRINT(s) // Do nothing.
-#define DEBUG_SERIAL_PRINTFMT(s, format) // Do nothing.
-#define DEBUG_SERIAL_PRINT_FLASHSTRING(fs) // Do nothing.
-#define DEBUG_SERIAL_PRINTLN_FLASHSTRING(fs) // Do nothing.
-#define DEBUG_SERIAL_PRINTLN() // Do nothing.
-#define DEBUG_SERIAL_TIMESTAMP() // Do nothing.
-#else
-// Send simple string or numeric to serial port and wait for it to have been sent.
-// Make sure that Serial.begin() has been invoked, etc.
-#define DEBUG_SERIAL_PRINT(s) { OTV0P2BASE::serialPrintAndFlush(s); }
-#define DEBUG_SERIAL_PRINTFMT(s, fmt) { OTV0P2BASE::serialPrintAndFlush((s), (fmt)); }
-#define DEBUG_SERIAL_PRINT_FLASHSTRING(fs) { OTV0P2BASE::serialPrintAndFlush(F(fs)); }
-#define DEBUG_SERIAL_PRINTLN_FLASHSTRING(fs) { OTV0P2BASE::serialPrintlnAndFlush(F(fs)); }
-#define DEBUG_SERIAL_PRINTLN() { OTV0P2BASE::serialPrintlnAndFlush(); }
-// Print timestamp with no newline in format: MinutesSinceMidnight:Seconds:SubCycleTime
-extern void _debug_serial_timestamp();
-#define DEBUG_SERIAL_TIMESTAMP() _debug_serial_timestamp()
-#endif // DEBUG
-
-//---------------------
-
 // Returns true if there is time to andle at least one message inbound our outbound.
 // Includes time required to encrypt/decrypt/print a message if need be (~0.5s at 1MHz CPU).
 static bool timeToHandleMessage()
-  {
-  const uint8_t sct = OTV0P2BASE::getSubCycleTime();
-  return(sct < min((OTV0P2BASE::GSCT_MAX/4)*3, nearOverrunThreshold - 1));
-  }
+{
+    const uint8_t sct = OTV0P2BASE::getSubCycleTime();
+    return(sct < min((OTV0P2BASE::GSCT_MAX/4)*3, nearOverrunThreshold - 1));
+}
 
 // Controller's view of Least Significant Digits of the current (local) time, in this case whole seconds.
-#define TIME_CYCLE_S 60 // TIME_LSD ranges from 0 to TIME_CYCLE_S-1, also major cycle length.
+//static constexpr uint8_t TIME_CYCLE_S = 60; // TIME_LSD ranges from 0 to TIME_CYCLE_S-1, also major cycle length.
 static uint_fast8_t TIME_LSD; // Controller's notion of seconds within major cycle.
 
 // 'Elapsed minutes' count of minute/major cycles; cheaper than accessing RTC and not tied to real time.
@@ -212,56 +202,55 @@ static uint8_t minuteCount;
 // Tries to turn off most stuff safely that will benefit from doing so, but nothing too complex.
 // Tries not to use lots of energy so as to keep distress beacon running for a while.
 void panic()
-  {
-  // Reset radio and go into low-power mode.
-  PrimaryRadio.panicShutdown();
-  // Power down almost everything else...
-  OTV0P2BASE::minimisePowerWithoutSleep();
+{
+    // Reset radio and go into low-power mode.
+    PrimaryRadio.panicShutdown();
+    // Power down almost everything else...
+    OTV0P2BASE::minimisePowerWithoutSleep();
 
-  pinMode(OTV0P2BASE::LED_HEATCALL_L, OUTPUT);
-  for( ; ; )
-    {
-    OTV0P2BASE::LED_HEATCALL_ON();
-    tinyPause();
-    OTV0P2BASE::LED_HEATCALL_OFF();
-    bigPause();
+    pinMode(OTV0P2BASE::LED_HEATCALL_L, OUTPUT);
+    for( ; ; ) {
+        OTV0P2BASE::LED_HEATCALL_ON();
+        tinyPause();
+        OTV0P2BASE::LED_HEATCALL_OFF();
+        bigPause();
     }
-  }
+}
 
 // Panic with fixed message.
 void panic(const __FlashStringHelper *s)
-  {
-  OTV0P2BASE::serialPrintlnAndFlush(); // Start new line to highlight error.  // May fail.
-  OTV0P2BASE::serialPrintAndFlush('!'); // Indicate error with leading '!' // May fail.
-  OTV0P2BASE::serialPrintlnAndFlush(s); // Print supplied detail text. // May fail.
-  panic();
-  }
+{
+    OTV0P2BASE::serialPrintlnAndFlush(); // Start new line to highlight error.  // May fail.
+    OTV0P2BASE::serialPrintAndFlush('!'); // Indicate error with leading '!' // May fail.
+    OTV0P2BASE::serialPrintlnAndFlush(s); // Print supplied detail text. // May fail.
+    panic();
+}
 
 // Rearrange date into sensible most-significant-first order, and make it fully numeric.
 // FIXME: would be better to have this in PROGMEM (Flash) rather than RAM, eg as F() constant.
 static const char _YYYYMmmDD[] =
-  {
-  __DATE__[7], __DATE__[8], __DATE__[9], __DATE__[10],
-  '/',
-  __DATE__[0], __DATE__[1], __DATE__[2],
-  '/',
-  ((' ' == __DATE__[4]) ? '0' : __DATE__[4]), __DATE__[5],
-  '\0'
-  };
+{
+    __DATE__[7], __DATE__[8], __DATE__[9], __DATE__[10],
+    '/',
+    __DATE__[0], __DATE__[1], __DATE__[2],
+    '/',
+    ((' ' == __DATE__[4]) ? '0' : __DATE__[4]), __DATE__[5],
+    '\0'
+};
 // Version (code/board) information printed as one line to serial (with line-end, and flushed); machine- and human- parseable.
 // Format: "board VX.X REVY YYYY/Mmm/DD HH:MM:SS".
 void serialPrintlnBuildVersion()
-  {
-  OTV0P2BASE::serialPrintAndFlush(F("board V0.2 REV"));
-  OTV0P2BASE::serialPrintAndFlush(V0p2_REV);
-  OTV0P2BASE::serialPrintAndFlush(' ');
-  OTV0P2BASE::serialPrintAndFlush(_YYYYMmmDD);
-  OTV0P2BASE::serialPrintlnAndFlush(F(" " __TIME__));
-  }
+{
+    OTV0P2BASE::serialPrintAndFlush(F("board V0.2 REV"));
+    OTV0P2BASE::serialPrintAndFlush(V0p2_REV);
+    OTV0P2BASE::serialPrintAndFlush(' ');
+    OTV0P2BASE::serialPrintAndFlush(_YYYYMmmDD);
+    OTV0P2BASE::serialPrintlnAndFlush(F(" " __TIME__));
+}
 
 
 // Singleton FHT8V valve instance (to control remote FHT8V valve by radio).
-static const uint8_t _FHT8V_MAX_EXTRA_TRAILER_BYTES = (1 + max(OTV0P2BASE::MESSAGING_TRAILING_MINIMAL_STATS_PAYLOAD_BYTES, OTV0P2BASE::FullStatsMessageCore_MAX_BYTES_ON_WIRE));
+static constexpr uint8_t _FHT8V_MAX_EXTRA_TRAILER_BYTES = (1 + max(OTV0P2BASE::MESSAGING_TRAILING_MINIMAL_STATS_PAYLOAD_BYTES, OTV0P2BASE::FullStatsMessageCore_MAX_BYTES_ON_WIRE));
 OTRadValve::FHT8VRadValve<_FHT8V_MAX_EXTRA_TRAILER_BYTES, OTRadValve::FHT8VRadValveBase::RFM23_PREAMBLE_BYTES, OTRadValve::FHT8VRadValveBase::RFM23_PREAMBLE_BYTE> FHT8V(NULL);
 // This unit may control a local TRV.
 // Returns TRV if valve/radiator is to be controlled by this unit.
@@ -269,10 +258,8 @@ OTRadValve::FHT8VRadValve<_FHT8V_MAX_EXTRA_TRAILER_BYTES, OTRadValve::FHT8VRadVa
 // Returns false if house code parts are set to invalid or uninitialised values (>99).
 inline bool localFHT8VTRVEnabled() { return(false /*!FHT8V.isUnavailable()*/ ); }
 
-
-#define ENABLE_NOMINAL_RAD_VALVE
 // Simply alias directly to FHT8V for REV9 slave.
-#define NominalRadValve FHT8V
+#define NominalRadValve FHT8V  // FIXME
 
 // Send a CC1 Alert message with this unit's house code; returns false on failure.
 bool sendCC1Alert()
@@ -371,10 +358,10 @@ bool sendCC1PollResponse()
 
 // Do basic static LED setting.
 static void setLEDs(const uint8_t lc)
-    {
+{
     // Assume primary UI LED is the red one (at least fot REV9 boards)...
     if(lc & 1) { OTV0P2BASE::LED_HEATCALL_ON(); } else { OTV0P2BASE::LED_HEATCALL_OFF(); }
-    }
+}
 
 // Logical last-requested light colour (lc).
 static uint8_t lcCO;
@@ -387,7 +374,7 @@ static uint8_t lfCO;
 // Timeout in minutes before a new boot request will be fully actioned.
 // This is kept long enough to ensure that the hub cannot have failed to see the status flip
 // unless all contact has in fact been lost.
-static const uint8_t MIN_BOOST_INTERVAL_M = 30;
+static constexpr uint8_t MIN_BOOST_INTERVAL_M = 30;
 // Count down from last flip of switch-toggle state, minutes.  Cannot toggle unless this is zero.
 static uint8_t toggle_blocked_countdown_m;
 // True if the button was active on the previous tick.
@@ -501,39 +488,37 @@ bool tickUICO(const uint_fast8_t sec)
 // If fromPollAndCmd is true then this was called from an incoming Poll/Cms message receipt.
 // Not ISR- safe.
 void setLEDsCO(const uint8_t lc, const uint8_t lt, const uint8_t lf, const bool fromPollAndCmd)
-    {
+{
     lcCO = lc;
     countDownLEDSforCO = (lt >= 17) ? 255 : lt * 15; // Units are 30s, ticks are 2s; overflow is avoided.
     lfCO = lf;
     setLEDs(lc); // Set correct colour immediately.
-    if(3 != lf)
-      {
-      // Only a flash of some sort is requested,
-      // so just flicker the LED(s),
-      // then turn off again until proper flash handler.
-      tinyPause();
-      setLEDs(0);
-      }
+    if(3 != lf) {
+        // Only a flash of some sort is requested,
+        // so just flicker the LED(s),
+        // then turn off again until proper flash handler.
+        tinyPause();
+        setLEDs(0);
+    }
     // Assume that the hub will shortly know about any pending request.
     if(fromPollAndCmd) { waitingForPollAfterBoostRequest = false; }
-    }
+}
 
 bool pollIO(const bool force)
-  {
-  static volatile uint8_t _pO_lastPoll;
-  // Poll RX at most about every ~8ms.
-  const uint8_t sct = OTV0P2BASE::getSubCycleTime();
-  if(force || (sct != _pO_lastPoll))
-    {
-    _pO_lastPoll = sct;
-    // Poll for inbound frames.
-    // If RX is not interrupt-driven then
-    // there will usually be little time to do this
-    // before getting an RX overrun or dropped frame.
-    PrimaryRadio.poll();
+{
+    static volatile uint8_t _pO_lastPoll;
+    // Poll RX at most about every ~8ms.
+    const uint8_t sct = OTV0P2BASE::getSubCycleTime();
+    if(force || (sct != _pO_lastPoll)) {
+        _pO_lastPoll = sct;
+        // Poll for inbound frames.
+        // If RX is not interrupt-driven then
+        // there will usually be little time to do this
+        // before getting an RX overrun or dropped frame.
+        PrimaryRadio.poll();
     }
-  return(false);
-  }
+    return(false);
+}
 
 // Decode and handle inbound raw message (msg[-1] contains the count of bytes received).
 // A message may contain trailing garbage at the end; the decoder/router should cope.
@@ -917,26 +902,25 @@ void serialStatusReport()
 // It is acceptable for extCLIHandler() to alter the buffer passed,
 // eg with strtok_t().
 static bool extCLIHandler(Print *p, char *const buf, const uint8_t n)
-  {
-  // If CC1 relay then allow +CC1 ! command to send an alert to the hub.
-  // Full command is:
-  //    +CC1 !
-  // This unit's housecode is used in the frame sent.
-  const uint8_t CC1_A_PREFIX_LEN = 6;
-  // Falling through rather than return(true) indicates failure.
-  if((n >= CC1_A_PREFIX_LEN) && (0 == strncmp("+CC1 !", buf, CC1_A_PREFIX_LEN)))
-    {
-    // Send the alert!
-    return(sendCC1Alert());
+{
+    // If CC1 relay then allow +CC1 ! command to send an alert to the hub.
+    // Full command is:
+    //    +CC1 !
+    // This unit's housecode is used in the frame sent.
+    const uint8_t CC1_A_PREFIX_LEN = 6;
+    // Falling through rather than return(true) indicates failure.
+    if((n >= CC1_A_PREFIX_LEN) && (0 == strncmp("+CC1 !", buf, CC1_A_PREFIX_LEN))) {
+        // Send the alert!
+        return(sendCC1Alert());
     }
-  return(false); // FAILED if not otherwise handled.
-  }
+    return(false); // FAILED if not otherwise handled.
+}
 
 // Remaining minutes to keep CLI active; zero implies inactive.
 // Starts up with full value to allow easy setting of time, etc, without specially activating CLI.
 // Marked volatile for thread-safe lock-free non-read-modify-write access to byte-wide value.
 // Compound operations on this value must block interrupts.
-#define CLI_DEFAULT_TIMEOUT_M 2
+static constexpr uint8_t CLI_DEFAULT_TIMEOUT_M = 2;
 static volatile uint8_t CLITimeoutM = CLI_DEFAULT_TIMEOUT_M;
 // Reset CLI active timer to the full whack before it goes inactive again (ie makes CLI active for a while).
 // Thread-safe.
@@ -944,7 +928,7 @@ void resetCLIActiveTimer() { CLITimeoutM = CLI_DEFAULT_TIMEOUT_M; }
 // Returns true if the CLI is active, at least intermittently.
 // Thread-safe.
 bool isCLIActive() { return(0 != CLITimeoutM); }
-static const uint8_t MAXIMUM_CLI_RESPONSE_CHARS = 1 + OTV0P2BASE::CLI::MAX_TYPICAL_CLI_BUFFER;
+static constexpr uint8_t MAXIMUM_CLI_RESPONSE_CHARS = 1 + OTV0P2BASE::CLI::MAX_TYPICAL_CLI_BUFFER;
 
 // Used to poll user side for CLI input until specified sub-cycle time.
 // Commands should be sent terminated by CR *or* LF; both may prevent 'E' (exit) from working properly.
@@ -1080,7 +1064,8 @@ void setup()
     }
 
   // Have 32678Hz clock at least running before going any further.
-  if(!::OTV0P2BASE::HWTEST::check32768HzOsc()) { panic(F("xtal")); } // Async clock not running correctly.
+  // Check that the slow clock is running reasonably OK, and tune the fast one to it.
+  if(!::OTV0P2BASE::HWTEST::calibrateInternalOscWithExtOsc()) { panic(F("xtal")); } // Async clock not running correctly.
 
 //  // Signal that xtal is running AND give it time to settle.
 //  posPOST(0 /*, F("about to test radio module") */);

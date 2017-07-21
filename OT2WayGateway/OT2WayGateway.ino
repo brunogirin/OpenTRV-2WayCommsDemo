@@ -38,87 +38,10 @@ Author(s) / Copyright (s): Deniz Erbilgin 2017
 #endif
 #include <OTV0p2_Board_IO_Config.h> // I/O pin allocation and setup: include ahead of I/O module headers.
 
-#define ENABLE_HUB_LISTEN
 // Force-enable always-on RX if not already so.
 #define ENABLE_RADIO_RX
 #define ENABLE_CONTINUOUS_RX
 
-// Indicate that the system is broken in an obvious way (distress flashing of the main UI LED).
-// DOES NOT RETURN.
-// Tries to turn off most stuff safely that will benefit from doing so, but nothing too complex.
-// Tries not to use lots of energy so as to keep the distress beacon running for a while.
-void panic();
-// Panic with fixed message.
-void panic(const __FlashStringHelper *s);
-
-// Version (code/board) information printed as one line to serial (with line-end, and flushed); machine- and human- parseable.
-// Format: "board VXXXX REVY; code YYYY/Mmm/DD HH:MM:SS".
-void serialPrintlnBuildVersion();
-
-// Call this to do an I/O poll if needed; returns true if something useful happened.
-// This call should typically take << 1ms at 1MHz CPU.
-// Does not change CPU clock speeds, mess with interrupts (other than possible brief blocking), or sleep.
-// Should also do nothing that interacts with Serial.
-// Limits actual poll rate to something like once every 8ms, unless force is true.
-//   * force if true then force full poll on every call (ie do not internally rate-limit)
-// Not thread-safe, eg not to be called from within an ISR.
-bool pollIO(bool force = false);
-
-// Sends a short 1-line CRLF-terminated status report on the serial connection (at 'standard' baud).
-void serialStatusReport();
-
-// Reset CLI active timer to the full whack before it goes inactive again (ie makes CLI active for a while).
-// Thread-safe.
-void resetCLIActiveTimer();
-// Returns true if the CLI is (or should currently be) active, at least intermittently.
-// Thread-safe.
-bool isCLIActive();
-// Used to poll user side for CLI input until specified sub-cycle time.
-// A period of less than (say) 500ms will be difficult for direct human response on a raw terminal.
-// A period of less than (say) 100ms is not recommended to avoid possibility of overrun on long interactions.
-// Times itself out after at least a minute or two of inactivity.
-// NOT RENTRANT (eg uses static state for speed and code space).
-void pollCLI(uint8_t maxSCT, bool startOfMinute);
-
-const uint8_t nearOverrunThreshold = OTV0P2BASE::GSCT_MAX - 8; // ~64ms/~32 serial TX chars of grace time...
-
-
-
-// Create RFM23B. This is the primary radio.
-static constexpr uint8_t RFM23B_RX_QUEUE_SIZE = OTRFM23BLink::DEFAULT_RFM23B_RX_QUEUE_CAPACITY;
-static constexpr int8_t RFM23B_IRQ_PIN = PIN_RFM_NIRQ;
-static constexpr bool RFM23B_allowRX = true;
-OTRFM23BLink::OTRFM23BLink<OTV0P2BASE::V0p2_PIN_SPI_nSS, RFM23B_IRQ_PIN, RFM23B_RX_QUEUE_SIZE, RFM23B_allowRX> PrimaryRadio;
-
-// Dumy relative humidity
-OTV0P2BASE::DummyHumiditySensorSHT21 RelHumidity;
-
-// Ambient/room temperature sensor, usually on main board.
-OTV0P2BASE::RoomTemperatureC16_TMP112 TemperatureC16;
-
-
-// Use WDT-based timer for xxxPause() routines.
-// Very tiny low-power sleep to approximately match the PICAXE V0.09 routine of the same name.
-#define VERYTINY_PAUSE_MS 5
-static void inline veryTinyPause() { OTV0P2BASE::sleepLowPowerMs(VERYTINY_PAUSE_MS); }
-// Tiny low-power sleep to approximately match the PICAXE V0.09 routine of the same name.
-#define TINY_PAUSE_MS 15
-static void inline tinyPause() { OTV0P2BASE::nap(WDTO_15MS); } // 15ms vs 18ms nominal for PICAXE V0.09 impl.
-// Small low-power sleep.
-#define SMALL_PAUSE_MS 30
-static void inline smallPause() { OTV0P2BASE::nap(WDTO_30MS); }
-// Medium low-power sleep to approximately match the PICAXE V0.09 routine of the same name.
-// Premature wakeups MAY be allowed to avoid blocking I/O polling for too long.
-#define MEDIUM_PAUSE_MS 60
-static void inline mediumPause() { OTV0P2BASE::nap(WDTO_60MS); } // 60ms vs 144ms nominal for PICAXE V0.09 impl.
-// Big low-power sleep to approximately match the PICAXE V0.09 routine of the same name.
-// Premature wakeups MAY be allowed to avoid blocking I/O polling for too long.
-#define BIG_PAUSE_MS 120
-static void inline bigPause() { OTV0P2BASE::nap(WDTO_120MS); } // 120ms vs 288ms nominal for PICAXE V0.09 impl.
-// Pause between flashes to allow them to be distinguished (>100ms); was mediumPause() for PICAXE V0.09 impl.
-static void inline offPause() { bigPause(); pollIO(); }
-
-//---------------------
 
 #ifndef DEBUG
 #define DEBUG_SERIAL_PRINT(s) // Do nothing.
@@ -142,6 +65,67 @@ extern void _debug_serial_timestamp();
 
 //---------------------
 
+// Indicate that the system is broken in an obvious way (distress flashing of the main UI LED).
+// DOES NOT RETURN.
+// Tries to turn off most stuff safely that will benefit from doing so, but nothing too complex.
+// Tries not to use lots of energy so as to keep the distress beacon running for a while.
+void panic();
+// Panic with fixed message.
+void panic(const __FlashStringHelper *s);
+
+// Version (code/board) information printed as one line to serial (with line-end, and flushed); machine- and human- parseable.
+// Format: "board VXXXX REVY; code YYYY/Mmm/DD HH:MM:SS".
+void serialPrintlnBuildVersion();
+
+// Call this to do an I/O poll if needed; returns true if something useful happened.
+// This call should typically take << 1ms at 1MHz CPU.
+// Does not change CPU clock speeds, mess with interrupts (other than possible brief blocking), or sleep.
+// Should also do nothing that interacts with Serial.
+// Limits actual poll rate to something like once every 8ms, unless force is true.
+//   * force if true then force full poll on every call (ie do not internally rate-limit)
+// Not thread-safe, eg not to be called from within an ISR.
+void pollIO();
+
+// Sends a short 1-line CRLF-terminated status report on the serial connection (at 'standard' baud).
+void serialStatusReport();
+
+// Reset CLI active timer to the full whack before it goes inactive again (ie makes CLI active for a while).
+// Thread-safe.
+void resetCLIActiveTimer();
+// Returns true if the CLI is (or should currently be) active, at least intermittently.
+// Thread-safe.
+bool isCLIActive();
+// Used to poll user side for CLI input until specified sub-cycle time.
+// A period of less than (say) 500ms will be difficult for direct human response on a raw terminal.
+// A period of less than (say) 100ms is not recommended to avoid possibility of overrun on long interactions.
+// Times itself out after at least a minute or two of inactivity.
+// NOT RENTRANT (eg uses static state for speed and code space).
+void pollCLI(uint8_t maxSCT, bool startOfMinute);
+
+constexpr uint8_t nearOverrunThreshold = OTV0P2BASE::GSCT_MAX - 8; // ~64ms/~32 serial TX chars of grace time...
+
+// Create RFM23B. This is the primary radio.
+static constexpr uint8_t RFM23B_RX_QUEUE_SIZE = OTRFM23BLink::DEFAULT_RFM23B_RX_QUEUE_CAPACITY;
+static constexpr int8_t RFM23B_IRQ_PIN = PIN_RFM_NIRQ;
+static constexpr bool RFM23B_allowRX = true;
+OTRFM23BLink::OTRFM23BLink<OTV0P2BASE::V0p2_PIN_SPI_nSS, RFM23B_IRQ_PIN, RFM23B_RX_QUEUE_SIZE, RFM23B_allowRX> PrimaryRadio;
+
+// Dumy relative humidity
+OTV0P2BASE::DummyHumiditySensorSHT21 RelHumidity;
+
+// Ambient/room temperature sensor, usually on main board.
+OTV0P2BASE::RoomTemperatureC16_TMP112 TemperatureC16;
+
+
+// Use WDT-based timer for xxxPause() routines.
+// Tiny low-power sleep to approximately match the PICAXE V0.09 routine of the same name.
+static void inline tinyPause() { OTV0P2BASE::nap(WDTO_15MS); } // 15ms vs 18ms nominal for PICAXE V0.09 impl.
+// Big low-power sleep to approximately match the PICAXE V0.09 routine of the same name.
+// Premature wakeups MAY be allowed to avoid blocking I/O polling for too long.
+static void inline bigPause() { OTV0P2BASE::nap(WDTO_120MS); } // 120ms vs 288ms nominal for PICAXE V0.09 impl.
+
+//---------------------
+
 // Returns true if there is time to andle at least one message inbound our outbound.
 // Includes time required to encrypt/decrypt/print a message if need be (~0.5s at 1MHz CPU).
 static bool timeToHandleMessage()
@@ -151,7 +135,7 @@ static bool timeToHandleMessage()
 }
 
 // Controller's view of Least Significant Digits of the current (local) time, in this case whole seconds.
-#define TIME_CYCLE_S 60 // TIME_LSD ranges from 0 to TIME_CYCLE_S-1, also major cycle length.
+static constexpr uint8_t TIME_CYCLE_S = 60; // TIME_LSD ranges from 0 to TIME_CYCLE_S-1, also major cycle length.
 static uint_fast8_t TIME_LSD; // Controller's notion of seconds within major cycle.
 
 // 'Elapsed minutes' count of minute/major cycles; cheaper than accessing RTC and not tied to real time.
@@ -210,20 +194,9 @@ void serialPrintlnBuildVersion()
     OTV0P2BASE::serialPrintlnAndFlush(F(" " __TIME__));
 }
 
-// FIXME delete?
-// Singleton FHT8V valve instance (to control remote FHT8V valve by radio).
-static const uint8_t _FHT8V_MAX_EXTRA_TRAILER_BYTES = (1 + max(OTV0P2BASE::MESSAGING_TRAILING_MINIMAL_STATS_PAYLOAD_BYTES, OTV0P2BASE::FullStatsMessageCore_MAX_BYTES_ON_WIRE));
-OTRadValve::FHT8VRadValve<_FHT8V_MAX_EXTRA_TRAILER_BYTES, OTRadValve::FHT8VRadValveBase::RFM23_PREAMBLE_BYTES, OTRadValve::FHT8VRadValveBase::RFM23_PREAMBLE_BYTE> FHT8V(NULL);
-// This unit may control a local TRV.
-// Returns TRV if valve/radiator is to be controlled by this unit.
-// Usually the case, but may not be for (a) a hub or (b) a not-yet-configured unit.
-// Returns false if house code parts are set to invalid or uninitialised values (>99).
-#define localFHT8VTRVEnabled() (false) // Local FHT8V TRV disabled.
-
-
 #if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
 // TX 2 bytes of ID in each secure frame, corresponding to the FHT8V housecode.
-static const uint8_t lenTXID = 2;
+static constexpr uint8_t lenTXID = 2;
 // Support for secure TX side using FHT8V ID plus 0x80 padding from REV2 hub.
 // (High bits of trailing bytes should be low for traffic TO node whose ID is in header.)
 OTRadioLink::SimpleSecureFrame32or0BodyTXV0p2SuppliedID secureTXState(NULL);
@@ -238,22 +211,15 @@ static void setTXID(const uint8_t hc1, const uint8_t hc2)
   }
 #endif // defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
 
-bool pollIO(const bool force)
-  {
-  static volatile uint8_t _pO_lastPoll;
-  // Poll RX at most about every ~8ms.
-  const uint8_t sct = OTV0P2BASE::getSubCycleTime();
-  if(force || (sct != _pO_lastPoll))
-    {
-    _pO_lastPoll = sct;
+void pollIO()
+{
     // Poll for inbound frames.
     // If RX is not interrupt-driven then
     // there will usually be little time to do this
     // before getting an RX overrun or dropped frame.
     PrimaryRadio.poll();
-    }
-  return(false);
-  }
+    return(false);
+}
 
 // Decode and handle inbound raw message (msg[-1] contains the count of bytes received).
 // A message may contain trailing garbage at the end; the decoder/router should cope.
@@ -433,7 +399,9 @@ bool handleQueuedMessages(Print *p, bool wakeSerialIfNeeded, OTRadioLink::OTRadi
   if(!timeToHandleMessage()) { return(false); }
 
   // Deal with any I/O that is queued.
-  bool workDone = pollIO(true);
+//  bool workDone = pollIO();
+  bool workDone = false;
+  pollIO();
 
   // Check for activity on the radio link.
   rl->poll();
@@ -596,51 +564,7 @@ static const OTRadioLink::OTRadioChannelConfig RFM23BConfigs[nPrimaryRadioChanne
 // Sends a short 1-line CRLF-terminated status report on the serial connection (at 'standard' baud).
 void serialStatusReport()
   {
-#if !defined(ENABLE_FHT8VSIMPLE)
   OTV0P2BASE::serialPrintlnAndFlush(F("="));
-#else
-  // Force sensor read as not polled in main loop for COHEAT... (And flush any serial before messing with clocks, etc.)
-  OTV0P2BASE::flushSerialSCTSensitive();
-  TemperatureC16.read();
-  const bool neededWaking = OTV0P2BASE::powerUpSerialIfDisabled<V0P2_UART_BAUD>();
-  // Stats line starts with distinguished marker character '='.
-  Serial.print((char) OTV0P2BASE::SERLINE_START_CHAR_STATS);
-  Serial.print(NominalRadValve.get()); Serial.print('%'); // Target valve position.
-  const int temp = TemperatureC16.get();
-  Serial.print('@'); Serial.print(temp >> 4); Serial.print('C'); // Unrounded whole degrees C.
-      Serial.print(temp & 0xf, HEX); // Show 16ths in hex.
-  // Print optional house code section if codes set.
-  const uint8_t hc1 = FHT8V.nvGetHC1();
-  if(hc1 != 255)
-    {
-    Serial.print(F(";HC"));
-    Serial.print(hc1);
-    Serial.print(' ');
-    Serial.print(FHT8V.nvGetHC2());
-    if(!FHT8V.isInNormalRunState())
-      {
-      Serial.print(' ');
-      Serial.print('s'); // Indicate syncing with trailing lower-case 's' in field...
-      }
-#if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-    // Now show TX ID for secure association.
-    Serial.print(F(" TX ID"));
-    uint8_t idbuf[OTV0P2BASE::OpenTRV_Node_ID_Bytes];
-    getTXID(idbuf);
-    for(uint8_t i = 0; i < V0P2BASE_EE_LEN_ID; ++i)
-      {
-      Serial.print(' ');
-      Serial.print(idbuf[i], HEX);
-      }
-#endif // defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-    Serial.println();
-    }
-  // Terminate line.
-  Serial.println();
-  // Ensure that all text is sent before this routine returns, in case any sleep/powerdown follows that kills the UART.
-  OTV0P2BASE::flushSerialSCTSensitive();
-  if(neededWaking) { OTV0P2BASE::powerDownSerial(); }
-#endif
   }
 
 // Handle CLI extension commands.
@@ -874,7 +798,8 @@ void setup()
     }
 
   // Have 32678Hz clock at least running before going any further.
-  if(!::OTV0P2BASE::HWTEST::check32768HzOsc()) { panic(F("xtal")); } // Async clock not running correctly.
+  // Check that the slow clock is running reasonably OK, and tune the fast one to it.
+  if(!::OTV0P2BASE::HWTEST::calibrateInternalOscWithExtOsc()) { panic(F("xtal")); } // Async clock not running correctly.
 
 //  // Signal that xtal is running AND give it time to settle.
 //  posPOST(0 /*, F("about to test radio module") */);
