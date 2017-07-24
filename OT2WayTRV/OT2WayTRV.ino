@@ -138,6 +138,14 @@ AmbientLight AmbLight;
 // - POT
 // - Motor
 
+/**
+ * Supply Voltage instance
+ */
+// Sensor for supply (eg battery) voltage in millivolts.
+// Singleton implementation/instance.
+OTV0P2BASE::SupplyVoltageCentiVolts Supply_cV;
+
+
 // Ambient/room temperature sensor, usually on main board.
 OTV0P2BASE::RoomTemperatureC16_SHT21 TemperatureC16; // SHT21 impl.
 
@@ -249,17 +257,36 @@ void serialPrintlnBuildVersion()
 }
 
 
-// Singleton FHT8V valve instance (to control remote FHT8V valve by radio).
-static constexpr uint8_t _FHT8V_MAX_EXTRA_TRAILER_BYTES = (1 + max(OTV0P2BASE::MESSAGING_TRAILING_MINIMAL_STATS_PAYLOAD_BYTES, OTV0P2BASE::FullStatsMessageCore_MAX_BYTES_ON_WIRE));
-OTRadValve::FHT8VRadValve<_FHT8V_MAX_EXTRA_TRAILER_BYTES, OTRadValve::FHT8VRadValveBase::RFM23_PREAMBLE_BYTES, OTRadValve::FHT8VRadValveBase::RFM23_PREAMBLE_BYTE> FHT8V(NULL);
-// This unit may control a local TRV.
-// Returns TRV if valve/radiator is to be controlled by this unit.
-// Usually the case, but may not be for (a) a hub or (b) a not-yet-configured unit.
-// Returns false if house code parts are set to invalid or uninitialised values (>99).
-inline bool localFHT8VTRVEnabled() { return(false /*!FHT8V.isUnavailable()*/ ); }
+/**
+ * RADVALVE
+ * - Temp -> Valve position:    ModelledRadValveState
+ * - Valve pos -> motor drive:  ValveMotorDirectV1
+ *
+ * Top level requirements:
+ * - Settable target temp
+ */
+static constexpr bool binaryOnlyValveControl = false;
+// Handle state input and storage.
+OTRadValve::ModelledRadValveInputState radValveInputState;
+OTRadValve::ModelledRadValveState<binaryOnlyValveControl> radValveState;
+// DORM1/REV7 direct drive motor actuator.
+static constexpr uint8_t m1 = MOTOR_DRIVE_ML;
+static constexpr uint8_t m2 = MOTOR_DRIVE_MR;
+static constexpr uint8_t mi = 0;  // FIXME
+static constexpr uint8_t mc = 0;  // FIXME
+static constexpr uint8_t ms = 0;  // FIXME
+typedef OTRadValve::ValveMotorDirectV1<
+            OTRadValve::ValveMotorDirectV1HardwareDriver,
+            m1, m2, mi, mc, ms,
+            decltype(Supply_cV), &Supply_cV,
+            binaryOnlyValveControl
+        > ValveDirect_t;
+// Singleton implementation/instance.
+// Suppress unnecessary activity when room dark, eg to avoid disturbance if device crashes/restarts,
+// unless recent UI use because value is being fitted/adjusted.
+ValveDirect_t ValveDirect([](){return(AmbLight.isRoomDark());});
 
-// Simply alias directly to FHT8V for REV9 slave.
-#define NominalRadValve FHT8V  // FIXME
+
 
 // Send a CC1 Alert message with this unit's house code; returns false on failure.
 bool sendCC1Alert()
