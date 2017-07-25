@@ -286,14 +286,38 @@ typedef OTRadValve::ValveMotorDirectV1<
 // unless recent UI use because value is being fitted/adjusted.
 ValveDirect_t ValveDirect([](){return(AmbLight.isRoomDark());});
 
+/**
+ * @brief   Recalculate valve position. Should be called once per minute.
+ * @param   setPointC16: Target temperature in Celsius.
+ * @param   valveOpenPC: Current valve position in %. Updated by this routine!
+ * @note    - [ ] Valve setup stuff.
+ *          - [ ] Get set-point.
+ *          - [x] Update ModelledRadValveState.
+ *               - [x] Set new set-point.
+ *               - [x] Get current temperature.
+ *          - [x] Set new motor position..
+ */
+void updateTargetValvePosition(uint8_t setPointC, uint8_t &valveOpenPC)
+{
+    const uint8_t curTempC16 = TemperatureC16.get();
+    radValveInputState.targetTempC = setPointC;
+    radValveInputState.setReferenceTemperatures(curTempC16);
+    radValveState.tick(valveOpenPC, radValveInputState, &ValveDirect);
+    ValveDirect.set(valveOpenPC);
+}
+
+
+
+
 
 
 // Send a CC1 Alert message with this unit's house code; returns false on failure.
 bool sendCC1Alert()
-  {
+{
 #if !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-  OTProtocolCC::CC1Alert a = OTProtocolCC::CC1Alert::make(FHT8V.nvGetHC1(), FHT8V.nvGetHC2());
-  if(a.isValid()) // Might be invalid if house codes are, eg if house codes not set.
+//    OTProtocolCC::CC1Alert a = OTProtocolCC::CC1Alert::make(FHT8V.nvGetHC1(), FHT8V.nvGetHC2());
+    OTProtocolCC::CC1Alert a = OTProtocolCC::CC1Alert::make(0, 0);  // FIXME
+    if(a.isValid()) // Might be invalid if house codes are, eg if house codes not set.
     {
     uint8_t txbuf[OTProtocolCC::CC1Alert::primary_frame_bytes+1]; // More than large enough for preamble + sync + alert message.
     const uint8_t bodylen = a.encodeSimple(txbuf, sizeof(txbuf), true);
@@ -303,26 +327,26 @@ bool sendCC1Alert()
     return(PrimaryRadio.sendRaw(txbuf, bodylen, 0, OTRadioLink::OTRadioLink::TXmax));
     }
 #else
-  uint8_t key[16];
-  if(!OTV0P2BASE::getPrimaryBuilding16ByteSecretKey(key))
+    uint8_t key[16];
+    if(!OTV0P2BASE::getPrimaryBuilding16ByteSecretKey(key))
     { OTV0P2BASE::serialPrintlnAndFlush(F("!TX key")); return(false); } // FAIL
-  const OTRadioLink::SimpleSecureFrame32or0BodyTXBase::fixed32BTextSize12BNonce16BTagSimpleEnc_ptr_t e = OTAESGCM::fixed32BTextSize12BNonce16BTagSimpleEnc_DEFAULT_STATELESS;
-  uint8_t sbuf[OTRadioLink::SimpleSecureFrame32or0BodyTXBase::generateSecureBeaconMaxBufSize];
-  const uint8_t sbodylen = secureTXState.generateSecureBeaconRawForTX(sbuf, sizeof(sbuf), lenTXID, e, NULL, key); // 2 byte ID.
-  // ASSUME FRAMED CHANNEL 0 (but could check with config isUnframed flag).
-  // When sending on a channel with framing, do not explicitly send the frame length byte.
-  // DO NOT attempt to send if construction of the secure frame failed;
-  // doing so may reuse IVs and destroy the cipher security.
-  const bool success = (0 != sbodylen) && PrimaryRadio.sendRaw(sbuf+1, sbodylen-1);
+    const OTRadioLink::SimpleSecureFrame32or0BodyTXBase::fixed32BTextSize12BNonce16BTagSimpleEnc_ptr_t e = OTAESGCM::fixed32BTextSize12BNonce16BTagSimpleEnc_DEFAULT_STATELESS;
+    uint8_t sbuf[OTRadioLink::SimpleSecureFrame32or0BodyTXBase::generateSecureBeaconMaxBufSize];
+    const uint8_t sbodylen = secureTXState.generateSecureBeaconRawForTX(sbuf, sizeof(sbuf), lenTXID, e, NULL, key); // 2 byte ID.
+    // ASSUME FRAMED CHANNEL 0 (but could check with config isUnframed flag).
+    // When sending on a channel with framing, do not explicitly send the frame length byte.
+    // DO NOT attempt to send if construction of the secure frame failed;
+    // doing so may reuse IVs and destroy the cipher security.
+    const bool success = (0 != sbodylen) && PrimaryRadio.sendRaw(sbuf+1, sbodylen-1);
 #if 1 && defined(DEBUG)
-  if(!success) { OTV0P2BASE::serialPrintlnAndFlush(F("!TX")); }
-  else { OTV0P2BASE::serialPrintlnAndFlush(F("TX alert")); }
+    if(!success) { OTV0P2BASE::serialPrintlnAndFlush(F("!TX")); }
+    else { OTV0P2BASE::serialPrintlnAndFlush(F("TX alert")); }
 #endif
-  if(success) { return(true); } // Done!
+    if(success) { return(true); } // Done!
 #endif // ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
-  // FAILED if fallen through to here.
-  return(false);
-  }
+    // FAILED if fallen through to here.
+    return(false);
+}
 
 // True if a poll response is needed.
 // Cleared upon successful send.
@@ -332,15 +356,15 @@ bool sendCC1PollResponse()
   {
   // Respond to the hub with sensor data.
   // Can use read() for very freshest values at risk of some delay/cost.
-  const uint8_t hc1 = FHT8V.nvGetHC1();
-  const uint8_t hc2 = FHT8V.nvGetHC2();
+  const uint8_t hc1 = 0; // FHT8V.nvGetHC1();  // FIXME
+  const uint8_t hc2 = 0; // FHT8V.nvGetHC2();  // FIXME
   const uint8_t rh = RelHumidity.read() >> 1; // Scale from [0,100] to [0,50] for TX.
   const uint8_t tp = 0; //(uint8_t) constrain(extDS18B20_0.read() >> 3, 0, 199); // Scale to to 1/2C [0,100[ for TX.
   const uint8_t tr = (uint8_t) constrain(TemperatureC16.read() >> 2, 0, 199); // Scale from 1/16C to 1/4C [0,50[ for TX.
   const uint8_t al = AmbLight.read() >> 2; // Scale from [0,255] to [1,62] for TX (allow value coercion at extremes).
   const bool s = getSwitchToggleStateCO();
   const bool w = (fastDigitalRead(BUTTON_LEARN2_L) != LOW); // BUTTON_LEARN2_L high means open circuit means door/window open.
-  const bool sy = !NominalRadValve.isInNormalRunState(); // Assume only non-normal FHT8V state is 'syncing'.
+  const bool sy = false; //!NominalRadValve.isInNormalRunState(); // Assume only non-normal FHT8V state is 'syncing'.  // FIXME
   OTProtocolCC::CC1PollResponse r =
       OTProtocolCC::CC1PollResponse::make(hc1, hc2, rh, tp, tr, al, s, w, sy);
   // Send message back to hub.
@@ -555,7 +579,7 @@ bool pollIO(const bool force)
 // This will write any output to the supplied Print object,
 // typically the Serial output (which must be running if so).
 // This routine is NOT allowed to alter in any way the content of the buffer passed.
-static void decodeAndHandleRawRXedMessage(Print *p, const bool secure, const uint8_t * const msg)
+static void decodeAndHandleRawRXedMessage(Print * p, const bool /*secure*/, const uint8_t * const msg)
   {
   const uint8_t msglen = msg[-1];
 
@@ -643,8 +667,8 @@ DEBUG_SERIAL_PRINTLN_FLASHSTRING("!RX bad secure header");
       if(c.isValid())
         {
         // Process the message only if it is targetted at this node.
-        const uint8_t hc1 = FHT8V.nvGetHC1();
-        const uint8_t hc2 = FHT8V.nvGetHC2();
+        const uint8_t hc1 = 0; //FHT8V.nvGetHC1();  // FIXME
+        const uint8_t hc2 = 0; //FHT8V.nvGetHC2();  // FIXME
         if((c.getHC1() == hc1) && (c.getHC2() == hc2))
           {
           // Act on the incoming command.
@@ -653,7 +677,7 @@ DEBUG_SERIAL_PRINTLN_FLASHSTRING("!RX bad secure header");
           // Set LEDs immediately.
           setLEDsCO(c.getLC(), c.getLT(), c.getLF(), true);
           // Set radiator valve position immediately.
-          NominalRadValve.set(c.getRP());
+//          NominalRadValve.set(c.getRP());   // FIXME
           // If relatively early in the cycle then send the response immediately.
           if(timeToHandleMessage()) { sendCC1PollResponse(); }
           }
@@ -860,7 +884,7 @@ static bool FilterRXISR(const volatile uint8_t *buf, volatile uint8_t &buflen)
 #ifndef ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
   if((buflen < 8) || (OTRadioLink::FTp2_CC1PollAndCmd != buf[0])) { return(false); }
   // Filter for only this unit address/housecode as FHT8V.getHC{1,2}() are thread-safe.
-  if((FHT8V.getHC1() != buf[1]) || (FHT8V.getHC2() != buf[2])) { return(false); }
+//  if((FHT8V.getHC1() != buf[1]) || (FHT8V.getHC2() != buf[2])) { return(false); }    // FIXME
 #else
   // Expect secure frame with 2-byte ID and 32-byte encrypted body.
   if((buflen < 60) || ((0x80|OTRadioLink::FTp2_CC1PollAndCmd) != buf[0])) { return(false); }
@@ -883,23 +907,23 @@ void serialStatusReport()
   const bool neededWaking = OTV0P2BASE::powerUpSerialIfDisabled<V0P2_UART_BAUD>();
   // Stats line starts with distinguished marker character '='.
   Serial.print((char) OTV0P2BASE::SERLINE_START_CHAR_STATS);
-  Serial.print(NominalRadValve.get()); Serial.print('%'); // Target valve position.
+//  Serial.print(NominalRadValve.get()); Serial.print('%'); // Target valve position.  // FIXME
   const int temp = TemperatureC16.get();
   Serial.print('@'); Serial.print(temp >> 4); Serial.print('C'); // Unrounded whole degrees C.
       Serial.print(temp & 0xf, HEX); // Show 16ths in hex.
   // Print optional house code section if codes set.
-  const uint8_t hc1 = FHT8V.nvGetHC1();
+  const uint8_t hc1 = 0; // FHT8V.nvGetHC1();  // FIXME
   if(hc1 != 255)
     {
     Serial.print(F(";HC"));
     Serial.print(hc1);
     Serial.print(' ');
-    Serial.print(FHT8V.nvGetHC2());
-    if(!FHT8V.isInNormalRunState())
-      {
-      Serial.print(' ');
-      Serial.print('s'); // Indicate syncing with trailing lower-case 's' in field...
-      }
+//    Serial.print(FHT8V.nvGetHC2());  // FIXME
+//    if(!FHT8V.isInNormalRunState())
+//      {
+//      Serial.print(' ');
+//      Serial.print('s'); // Indicate syncing with trailing lower-case 's' in field...
+//      }
 #if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
     // Now show TX ID for secure association.
     Serial.print(F(" TX ID"));
@@ -928,7 +952,7 @@ void serialStatusReport()
 //
 // It is acceptable for extCLIHandler() to alter the buffer passed,
 // eg with strtok_t().
-static bool extCLIHandler(Print *p, char *const buf, const uint8_t n)
+static bool extCLIHandler(Print * /*p*/, char *const buf, const uint8_t n)
 {
     // If CC1 relay then allow +CC1 ! command to send an alert to the hub.
     // Full command is:
@@ -1010,7 +1034,7 @@ void pollCLI(const uint8_t maxSCT, const bool startOfMinute)
       // H [nn nn]
       // Set (non-volatile) HC1 and HC2 for single/primary FHT8V wireless valve under control.
       // Missing values will clear the code entirely (and disable use of the valve).
-      case 'H': { showStatus = OTRadValve::FHT8VRadValveBase::SetHouseCode(&FHT8V).doCommand(buf, n); break; }
+//      case 'H': { showStatus = OTRadValve::FHT8VRadValveBase::SetHouseCode(&FHT8V).doCommand(buf, n); break; }    // FIXME
 
 #if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
       // Set secret key.
@@ -1168,11 +1192,11 @@ void setup()
   // Start anywhere in first 4 minute cycle.
   minuteCount = b & 3;
 
-  // Set up radio with FHT8V.
-  FHT8V.setRadio(&PrimaryRadio);
-  // Load EEPROM house codes into primary FHT8V instance at start.
-  FHT8V.nvLoadHC();
-  FHT8V.setChannelTX(1);
+//  // Set up radio with FHT8V.    // FIXME
+//  FHT8V.setRadio(&PrimaryRadio);
+//  // Load EEPROM house codes into primary FHT8V instance at start.
+//  FHT8V.nvLoadHC();
+//  FHT8V.setChannelTX(1);
 
   // Start listening.
   PrimaryRadio.listen(true);
@@ -1209,7 +1233,7 @@ void loop()
   OTV0P2BASE::enableRTCWatchdog(true);
 
   // Use the zeroth second in each minute to force extra deep device sleeps/resets, etc.
-  const bool second0 = (0 == TIME_LSD);
+//  const bool second0 = (0 == TIME_LSD);
 
     // Run the CC1 relay UI.
     if(tickUICO(TIME_LSD))
@@ -1218,28 +1242,28 @@ void loop()
       }
 
   // Try for double TX for more robust conversation with valve?
-  const bool doubleTXForFTH8V = false;
+//  const bool doubleTXForFTH8V = false;
   // FHT8V is highest priority and runs first.
   // ---------- HALF SECOND #0 -----------
-  bool useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_First(doubleTXForFTH8V); // Time for extra TX before UI.
-  if(useExtraFHT8VTXSlots)
-    {
-    handleQueuedMessages(&Serial, true, &PrimaryRadio);
-    // ---------- HALF SECOND #1 -----------
-    useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_Next(doubleTXForFTH8V);
-    }
-  if(useExtraFHT8VTXSlots)
-    {
-    handleQueuedMessages(&Serial, true, &PrimaryRadio);
-    // ---------- HALF SECOND #2 -----------
-    useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_Next(doubleTXForFTH8V);
-    }
-  if(useExtraFHT8VTXSlots)
-    {
-    handleQueuedMessages(&Serial, true, &PrimaryRadio);
-    // ---------- HALF SECOND #3 -----------
-    useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_Next(doubleTXForFTH8V);
-    }
+//  bool useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_First(doubleTXForFTH8V); // Time for extra TX before UI.    // FIXME
+//  if(useExtraFHT8VTXSlots)
+//    {
+//    handleQueuedMessages(&Serial, true, &PrimaryRadio);
+//    // ---------- HALF SECOND #1 -----------
+//    useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_Next(doubleTXForFTH8V);
+//    }
+//  if(useExtraFHT8VTXSlots)
+//    {
+//    handleQueuedMessages(&Serial, true, &PrimaryRadio);
+//    // ---------- HALF SECOND #2 -----------
+//    useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_Next(doubleTXForFTH8V);
+//    }
+//  if(useExtraFHT8VTXSlots)
+//    {
+//    handleQueuedMessages(&Serial, true, &PrimaryRadio);
+//    // ---------- HALF SECOND #3 -----------
+//    useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_Next(doubleTXForFTH8V);
+//    }
 
   // If time to do some trailing processing, CLI, etc...
   while(timeToHandleMessage())
@@ -1269,7 +1293,7 @@ void loop()
 #if 1 && defined(DEBUG)
     DEBUG_SERIAL_PRINTLN_FLASHSTRING("!loop overrun");
 #endif
-    FHT8V.resyncWithValve(); // Assume that sync with valve may have been lost, so re-sync.
+//    FHT8V.resyncWithValve(); // Assume that sync with valve may have been lost, so re-sync.   // FIXME
     TIME_LSD = OTV0P2BASE::getSecondsLT(); // Prepare to sleep until start of next full minor cycle.
     }
   }
