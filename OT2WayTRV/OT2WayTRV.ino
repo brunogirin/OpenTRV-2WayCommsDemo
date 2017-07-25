@@ -300,8 +300,10 @@ ValveDirect_t ValveDirect([](){return(AmbLight.isRoomDark());});
 void updateTargetValvePosition(uint8_t setPointC, uint8_t &valveOpenPC)
 {
     const uint8_t curTempC16 = TemperatureC16.get();
+    // Set the new set-point and the current ambient temperature.
     radValveInputState.targetTempC = setPointC;
     radValveInputState.setReferenceTemperatures(curTempC16);
+    // Calculate the new valve position and set it in the motor driver.
     radValveState.tick(valveOpenPC, radValveInputState, &ValveDirect);
     ValveDirect.set(valveOpenPC);
 }
@@ -1209,6 +1211,10 @@ void setup()
 // Main code here, loops every 2s.
 void loop()
   {
+    // Note last-measured battery status.
+    const bool batteryLow = Supply_cV.isSupplyVoltageLow();
+
+
   setUpContinuousRX();
   OTV0P2BASE::powerDownSerial(); // Ensure that serial I/O is off.
   // Power down most stuff (except radio for hub RX).
@@ -1265,6 +1271,14 @@ void loop()
 //    useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_Next(doubleTXForFTH8V);
 //    }
 
+    // Naive attempt at adding in valve update  TODO
+    static uint8_t valveOpenPC = 0;
+
+    if(TIME_LSD == 2) {
+        const uint8_t targetTempC = 0;
+        updateTargetValvePosition(targetTempC, valveOpenPC);
+    }
+
   // If time to do some trailing processing, CLI, etc...
   while(timeToHandleMessage())
     {
@@ -1283,6 +1297,34 @@ void loop()
       }
     break;
     }
+
+  // Handle local direct-drive valve, eg DORM1.
+  // If waiting for for verification that the valve has been fitted
+  // then accept any manual interaction with controls as that signal.
+  // Also have a backup timeout of at least ~10m from startup
+  // for automatic recovery after a crash and restart,
+  // or where fitter simply forgets to initiate cablibration.
+  if(ValveDirect.isWaitingForValveToBeFitted())
+      {
+      // Defer automatic recovery when battery low or in dark in case crashing/restarting
+      // to try to avoid disturbing/waking occupants and/or entering battery death spiral.  (TODO-1037, TODO-963)
+      // The initial minuteCount value can be anywhere in the range [0,3];
+      // pick threshold to give user at least a couple of minutes to fit the device
+      // if they do so with the battery in place.
+//      const bool delayRecalibration = batteryLow || AmbLight.isRoomDark();
+//      if(valveUI.veryRecentUIControlUse() || (minuteCount >= (delayRecalibration ? 240 : 5)))  // FIXME
+//          { ValveDirect.signalValveFitted(); }
+      }
+  // Provide regular poll to motor driver.
+  // May take significant time to run
+  // so don't call when timing is critical
+  // nor when not much time left this cycle,
+  // nor some of the time during startup if possible,
+  // so as (for example) to allow the CLI to be operable.
+  // Only calling this after most other heavy-lifting work is likely done.
+  // Note that FHT8V sync will take up at least the first 1s of a 2s subcycle.
+  if(/*!showStatus &&*/ (OTV0P2BASE::getSubCycleTime() < ((OTV0P2BASE::GSCT_MAX/4)*3)))
+    { ValveDirect.read(); }
 
   // Detect and handle (actual or near) overrun, if it happens, though it should not.
   if(TIME_LSD != OTV0P2BASE::getSecondsLT())
