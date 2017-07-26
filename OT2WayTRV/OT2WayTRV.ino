@@ -347,7 +347,7 @@ bool sendCC1PollResponse()
   const uint8_t al = AmbLight.read() >> 2; // Scale from [0,255] to [1,62] for TX (allow value coercion at extremes).
   const bool s = getSwitchToggleStateCO();
   const bool w = (fastDigitalRead(BUTTON_LEARN2_L) != LOW); // BUTTON_LEARN2_L high means open circuit means door/window open.
-  const bool sy = false; //!NominalRadValve.isInNormalRunState(); // Assume only non-normal FHT8V state is 'syncing'.  // FIXME
+  const bool sy = ValveDirect.isInNormalRunState();
   OTProtocolCC::CC1PollResponse r =
       OTProtocolCC::CC1PollResponse::make(hc1, hc2, rh, tp, tr, al, s, w, sy);
   // Send message back to hub.
@@ -810,18 +810,13 @@ void serialStatusReport()
   Serial.print('@'); Serial.print(temp >> 4); Serial.print('C'); // Unrounded whole degrees C.
       Serial.print(temp & 0xf, HEX); // Show 16ths in hex.
   // Print optional house code section if codes set.
-  const uint8_t hc1 = 0; // FHT8V.nvGetHC1();  // FIXME
+  const uint8_t hc1 = housecode1; // FHT8V.nvGetHC1();  // FIXME
   if(hc1 != 255)
     {
     Serial.print(F(";HC"));
     Serial.print(hc1);
     Serial.print(' ');
-//    Serial.print(FHT8V.nvGetHC2());  // FIXME
-//    if(!FHT8V.isInNormalRunState())
-//      {
-//      Serial.print(' ');
-//      Serial.print('s'); // Indicate syncing with trailing lower-case 's' in field...
-//      }
+   Serial.print(housecode2);
     Serial.println();
     }
   // Terminate line.
