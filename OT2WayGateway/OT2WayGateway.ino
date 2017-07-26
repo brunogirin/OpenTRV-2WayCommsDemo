@@ -17,7 +17,7 @@ Author(s) / Copyright (s): Deniz Erbilgin 2017
 */
 
 // Uncomment exactly one of the following CONFIG_... lines to select which board is being built for.
-#define CONFIG_Trial2013Winter_Round2_CC1HUB // REV2 cut4 as CC1 hub.
+#define CONFIG_REV8_2WAY_COMMS // REV2 cut4 as CC1 hub.
 //#define CONFIG_REV9 // REV9 as CC1 relay, cut 2 of the board.
 
 // IF DEFINED: entire comms model switches to secure.
@@ -32,7 +32,7 @@ Author(s) / Copyright (s): Deniz Erbilgin 2017
 #include <OTRFM23BLink.h>
 #include <OTRadValve.h>
 #include <OTProtocolCC.h>
-#include <OTV0p2_CONFIG_REV2.h>
+#include <OTV0p2_CONFIG_REV8.h>
 #if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
 #include <OTAESGCM.h>
 #endif
@@ -114,7 +114,7 @@ OTRFM23BLink::OTRFM23BLink<OTV0P2BASE::V0p2_PIN_SPI_nSS, RFM23B_IRQ_PIN, RFM23B_
 OTV0P2BASE::DummyHumiditySensorSHT21 RelHumidity;
 
 // Ambient/room temperature sensor, usually on main board.
-OTV0P2BASE::RoomTemperatureC16_TMP112 TemperatureC16;
+OTV0P2BASE::RoomTemperatureC16_SHT21 TemperatureC16;
 
 
 // Use WDT-based timer for xxxPause() routines.
@@ -304,7 +304,6 @@ DEBUG_SERIAL_PRINTLN_FLASHSTRING("!RX bad secure header");
 
     // Handle alert message (at hub).
     // Dump onto serial to be seen by the attached host.
-#if !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
     // Non-secure.
     case OTRadioLink::FTp2_CC1Alert:
       {
@@ -318,24 +317,10 @@ DEBUG_SERIAL_PRINTLN_FLASHSTRING("!RX bad secure header");
         }
       return; // OK
       }
-#else  // !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-    // Secure.
-    case 0x80 | OTRadioLink::FTp2_CC1Alert:
-      {
-      // Already authenticated and no body to decode.
-      // Pass message to host to deal with as "! hc1 hc2" after prefix indicating relayed (CC1 alert) message.
-      p->print(F("+CC1 ! ")); p->print(senderNodeID[0]); p->print(' '); p->println(senderNodeID[1]);
-      return; // OK
-      }
-#endif // defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
 
     // Handle poll-response message (at hub).
     // Dump onto serial to be seen by the attached host.
-#if !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
     case OTRadioLink::FTp2_CC1PollResponse: // Non-secure.
-#else
-    case 0x80 | OTRadioLink::FTp2_CC1PollResponse: // Secure.
-#endif // !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
       {
       OTProtocolCC::CC1PollResponse a;
       a.OTProtocolCC::CC1PollResponse::decodeSimple(cleartextBody, cleartextBodyLen);
@@ -536,18 +521,10 @@ ISR(PCINT2_vect)
 // For a CC1 hub, ignore everything except FTp2_CC1Alert and FTp2_CC1PollResponse messages.
 static bool FilterRXISR(const volatile uint8_t *buf, volatile uint8_t &buflen)
   {
-#ifndef ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
   if(buflen < 8) { return(false); }
   const uint8_t t = buf[0];
   if((OTRadioLink::FTp2_CC1Alert != t) && (OTRadioLink::FTp2_CC1PollResponse != t)) { return(false); }
   // TODO: filter for only associated relay address/housecodes.
-#else
-  // Expect secure frame with 2-byte ID and 0- or 32-byte encrypted body.
-  if(buflen < 28) { return(false); }
-  const uint8_t t = buf[0];
-  if(((0x80|OTRadioLink::FTp2_CC1Alert) != t) && ((0x80|OTRadioLink::FTp2_CC1PollResponse) != t)) { return(false); }
-  // TODO: filter for only associated relay address/housecodes.
-#endif // ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
   return(true); // Accept message.
   }
 
@@ -619,28 +596,10 @@ static bool extCLIHandler(Print *const p, char *const buf, const uint8_t n)
           {
           uint8_t txbuf[OTProtocolCC::CC1PollAndCommand::primary_frame_bytes+1]; // More than large enough for preamble + sync + alert message.
           const uint8_t bodylen = q.encodeSimple(txbuf, sizeof(txbuf), true);
-#if !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
           // Non-secure: send raw frame as-is.
           // TX at normal power since ACKed and can be repeated if necessary.
           if(PrimaryRadio.sendRaw(txbuf, bodylen))
             { return(true); } // Success!
-#else
-          // Secure: wrap frame in encrypted layer...
-          uint8_t key[16];
-          if(!OTV0P2BASE::getPrimaryBuilding16ByteSecretKey(key))
-            { OTV0P2BASE::serialPrintlnAndFlush(F("!TX key")); return(false); } // FAIL
-          const OTRadioLink::SimpleSecureFrame32or0BodyTXBase::fixed32BTextSize12BNonce16BTagSimpleEnc_ptr_t e = OTAESGCM::fixed32BTextSize12BNonce16BTagSimpleEnc_DEFAULT_STATELESS;
-          // Hub must indicate which relay it is sending (reverse traffic) to.
-          setTXID(q.getHC1(), q.getHC2());
-          uint8_t sbuf[OTRadioLink::SecurableFrameHeader::maxSmallFrameSize];
-          const uint8_t sbodylen = secureTXState.generateSecureOStyleFrameForTX(sbuf, sizeof(sbuf), OTRadioLink::FTS_RESERVED_Q, lenTXID, txbuf, bodylen, e, NULL, key);
-          const bool success = (0 != sbodylen) && PrimaryRadio.sendRaw(sbuf+1, sbodylen-1);
-#if 1 && defined(DEBUG)
-          if(!success) { OTV0P2BASE::serialPrintlnAndFlush(F("!TX Q")); }
-          else { OTV0P2BASE::serialPrintlnAndFlush(F("TX Q")); }
-#endif
-          if(success) { return(true); }
-#endif // !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
           // Fall-through is failure...
           OTV0P2BASE::serialPrintlnAndFlush(F("!TX fail"));
           }
@@ -707,21 +666,10 @@ void pollCLI(const uint8_t maxSCT, const bool startOfMinute)
       // Avoid showing status as may already be rather a lot of output.
       default: case '?': { /* dumpCLIUsage(maxSCT); */ showStatus = false; break; }
 
-#if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-      // Set new node association (nodes to accept frames from).
-      // Only needed if able to RX and/or some sort of hub.
-      case 'A': { showStatus = OTV0P2BASE::CLI::SetNodeAssoc().doCommand(buf, n); break; }
-#endif // ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
-
       // Exit/deactivate CLI immediately.
       // This should be followed by JUST CR ('\r') OR LF ('\n')
       // else the second will wake the CLI up again.
       case 'E': { CLITimeoutM = 0; break; }
-
-#if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-      // Set secret key.
-      case 'K': { showStatus = OTV0P2BASE::CLI::SetSecretKey(OTRadioLink::SimpleSecureFrame32or0BodyTXV0p2::resetRaw3BytePersistentTXRestartCounterCond).doCommand(buf, n); break; }
-#endif // ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
 
       // Status line and optional smart/scheduled warming prediction request.
       case 'S':

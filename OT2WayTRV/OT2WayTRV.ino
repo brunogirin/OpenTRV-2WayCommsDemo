@@ -20,9 +20,6 @@ Author(s) / Copyright (s): Deniz Erbilgin 2017
 
 #define CONFIG_REV7_2WAY // REV7 as CC1 valve.
 
-// IF DEFINED: entire comms model switches to secure.
-//#define ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
-
 #define DEBUG // Uncomment for debug output.
 
 #include <Arduino.h>
@@ -33,9 +30,6 @@ Author(s) / Copyright (s): Deniz Erbilgin 2017
 #include <OTRadValve.h>
 #include <OTProtocolCC.h>
 #include <OTV0p2_CONFIG_REV7.h>
-#if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-#include <OTAESGCM.h>
-#endif
 #include <OTV0p2_Board_IO_Config.h> // I/O pin allocation and setup: include ahead of I/O module headers.
 
 // Force-enable always-on RX if not already so.
@@ -303,7 +297,8 @@ ValveDirect_t ValveDirect([](){return(AmbLight.isRoomDark());});
  *               - [x] Get current temperature.
  *          - [x] Set new motor position..
  */
-void updateTargetValvePosition(uint8_t setPointC, uint8_t &valveOpenPC)
+static uint8_t setPointC = 18;  // Initialise set-point to a reasonable value.
+void updateTargetValvePosition(uint8_t &valveOpenPC)
 {
     const uint8_t curTempC16 = TemperatureC16.get();
     // Set the new set-point and the current ambient temperature.
@@ -322,7 +317,6 @@ void updateTargetValvePosition(uint8_t setPointC, uint8_t &valveOpenPC)
 // Send a CC1 Alert message with this unit's house code; returns false on failure.
 bool sendCC1Alert()
 {
-#if !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
     OTProtocolCC::CC1Alert a = OTProtocolCC::CC1Alert::make(housecode1, housecode2); // FIXME
     if(a.isValid()) // Might be invalid if house codes are, eg if house codes not set.
     {
@@ -333,24 +327,6 @@ bool sendCC1Alert()
     // Should be consistent with automatically-generated alerts to help with diagnosis.
     return(PrimaryRadio.sendRaw(txbuf, bodylen, 0, OTRadioLink::OTRadioLink::TXmax));
     }
-#else
-    uint8_t key[16];
-    if(!OTV0P2BASE::getPrimaryBuilding16ByteSecretKey(key))
-    { OTV0P2BASE::serialPrintlnAndFlush(F("!TX key")); return(false); } // FAIL
-    const OTRadioLink::SimpleSecureFrame32or0BodyTXBase::fixed32BTextSize12BNonce16BTagSimpleEnc_ptr_t e = OTAESGCM::fixed32BTextSize12BNonce16BTagSimpleEnc_DEFAULT_STATELESS;
-    uint8_t sbuf[OTRadioLink::SimpleSecureFrame32or0BodyTXBase::generateSecureBeaconMaxBufSize];
-    const uint8_t sbodylen = secureTXState.generateSecureBeaconRawForTX(sbuf, sizeof(sbuf), lenTXID, e, NULL, key); // 2 byte ID.
-    // ASSUME FRAMED CHANNEL 0 (but could check with config isUnframed flag).
-    // When sending on a channel with framing, do not explicitly send the frame length byte.
-    // DO NOT attempt to send if construction of the secure frame failed;
-    // doing so may reuse IVs and destroy the cipher security.
-    const bool success = (0 != sbodylen) && PrimaryRadio.sendRaw(sbuf+1, sbodylen-1);
-#if 1 && defined(DEBUG)
-    if(!success) { OTV0P2BASE::serialPrintlnAndFlush(F("!TX")); }
-    else { OTV0P2BASE::serialPrintlnAndFlush(F("TX alert")); }
-#endif
-    if(success) { return(true); } // Done!
-#endif // ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
     // FAILED if fallen through to here.
     return(false);
 }
@@ -382,7 +358,6 @@ bool sendCC1PollResponse()
 #if 1 && defined(DEBUG)
   OTV0P2BASE::serialPrintlnAndFlush(F("polled"));
 #endif
-#if !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
   // Non-secure: send raw frame as-is.
   // Send at default power...  One going missing won't hurt that much.
   if(!PrimaryRadio.sendRaw(txbuf, bodylen))
@@ -390,26 +365,6 @@ bool sendCC1PollResponse()
   // Note successful dispatch of response.
   pollResponseNeeded = false;
   return(true);
-#else
-  // Secure: wrap frame in encrypted layer...
-  uint8_t key[16];
-  if(!OTV0P2BASE::getPrimaryBuilding16ByteSecretKey(key))
-    { OTV0P2BASE::serialPrintlnAndFlush(F("!TX key")); return(false); } // FAIL
-  const OTRadioLink::SimpleSecureFrame32or0BodyTXBase::fixed32BTextSize12BNonce16BTagSimpleEnc_ptr_t e = OTAESGCM::fixed32BTextSize12BNonce16BTagSimpleEnc_DEFAULT_STATELESS;
-  uint8_t sbuf[OTRadioLink::SecurableFrameHeader::maxSmallFrameSize];
-  const uint8_t sbodylen = secureTXState.generateSecureOStyleFrameForTX(sbuf, sizeof(sbuf), OTRadioLink::FTS_RESERVED_A, lenTXID, txbuf, bodylen, e, NULL, key);
-  const bool success = (0 != sbodylen) && PrimaryRadio.sendRaw(sbuf+1, sbodylen-1);
-#if 1 && defined(DEBUG)
-  if(!success) { OTV0P2BASE::serialPrintlnAndFlush(F("!TX *")); }
-  else { OTV0P2BASE::serialPrintlnAndFlush(F("TX *")); }
-#endif
-  if(success)
-    {
-    // Note successful dispatch of response.
-    pollResponseNeeded = false;
-    return(true);
-    }
-#endif // !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
   // FAILED if fallen through to here.
   return(false);
   }
@@ -594,64 +549,10 @@ static void decodeAndHandleRawRXedMessage(Print * p, const bool /*secure*/, cons
   OTRadioLink::printRXMsg(p, msg-1, msglen+1); // Print len+frame.
 #endif
 
-#if !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
    // For non-secure, check that there enough bytes for expected (fixed) frame size.
    if(msglen < 8) { return; } // Too short to be useful, so ignore.
    const uint8_t *cleartextBody = msg;
    const uint8_t cleartextBodyLen = msglen;
-#else
-  // For length-first OpenTRV secureable-frame format, validate structure of header/frame first.
-  // This is quick and checks for insane/dangerous values throughout.
-  OTRadioLink::SecurableFrameHeader sfh;
-  const uint8_t l = sfh.checkAndDecodeSmallFrameHeader(msg-1, msglen+1);
-  if((0 == l) || !sfh.isSecure()) // Invalid header, or not in secure format.
-    {
-#if 1 && defined(DEBUG)
-DEBUG_SERIAL_PRINTLN_FLASHSTRING("!RX bad secure header");
-#endif
-    return; // FAIL
-    }
-  uint8_t key[16];
-  // Get the 'building' key.
-  if(!OTV0P2BASE::getPrimaryBuilding16ByteSecretKey(key))
-    {
-    DEBUG_SERIAL_PRINTLN_FLASHSTRING("!RX key");
-    return; // FAIL
-    }
-  // Attempt to authenticate (and decrypt) the frame before inspecting content.
-  // Buffer for receiving secure frame body.
-  // (Non-secure frame bodies should be read directly from the frame buffer.)
-  uint8_t secBodyBuf[OTRadioLink::ENC_BODY_SMALL_FIXED_PTEXT_MAX_SIZE];
-  // Body length after any decryption, etc.
-  uint8_t decryptedBodyOutSize = 0;
-  // Check that there is an association/key for the inbound message.
-  uint8_t senderNodeID[OTV0P2BASE::OpenTRV_Node_ID_Bytes];
-  // Look up full ID in associations table,
-  // validate RX message counter,
-  // authenticate and decrypt,
-  // update RX message counter.
-  const uint8_t dfl = OTRadioLink::SimpleSecureFrame32or0BodyRXV0p2::getInstance().decodeSecureSmallFrameSafely(&sfh, msg-1, msglen+1,
-                                          OTAESGCM::fixed32BTextSize12BNonce16BTagSimpleDec_DEFAULT_STATELESS,
-                                          NULL, key,
-                                          secBodyBuf, sizeof(secBodyBuf), decryptedBodyOutSize,
-                                          senderNodeID,
-                                          true);
-  if(0 == dfl)
-    {
-#if 1 // && defined(DEBUG)
-    // Useful brief network diagnostics: a couple of bytes of the claimed ID of rejected frames.
-    // Warnings rather than errors because there may legitimately be multiple disjoint networks.
-    OTV0P2BASE::serialPrintAndFlush(F("?RX auth")); // Missing association or failed auth.
-    if(sfh.getIl() > 0) { OTV0P2BASE::serialPrintAndFlush(' '); OTV0P2BASE::serialPrintAndFlush(sfh.id[0], HEX); }
-    if(sfh.getIl() > 1) { OTV0P2BASE::serialPrintAndFlush(' '); OTV0P2BASE::serialPrintAndFlush(sfh.id[1], HEX); }
-    OTV0P2BASE::serialPrintlnAndFlush();
-#endif
-    return; // FAIL
-    }
-   const uint8_t *cleartextBody = secBodyBuf;
-   const uint8_t cleartextBodyLen = decryptedBodyOutSize;
-#endif // ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
-
   const uint8_t firstByte = msg[0];
   switch(firstByte)
     {
@@ -662,11 +563,7 @@ DEBUG_SERIAL_PRINTLN_FLASHSTRING("!RX bad secure header");
     // Handle poll/cmd message (at relay).
     // IFF this message is addressed to this (target) unit's house code
     // then action the commands and respond (quickly) with a poll response.
-#if !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
     case OTRadioLink::FTp2_CC1PollAndCmd: // Non-secure.
-#else
-    case 0x80 | OTRadioLink::FTp2_CC1PollAndCmd: // Secure.
-#endif // !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
       {
       OTProtocolCC::CC1PollAndCommand c;
       c.OTProtocolCC::CC1PollAndCommand::decodeSimple(cleartextBody, cleartextBodyLen);
@@ -682,9 +579,11 @@ DEBUG_SERIAL_PRINTLN_FLASHSTRING("!RX bad secure header");
           // Note that a poll response will be needed.
           pollResponseNeeded = true;
           // Set LEDs immediately.
-          setLEDsCO(c.getLC(), c.getLT(), c.getLF(), true);
-          // Set radiator valve position immediately.
-//          NominalRadValve.set(c.getRP());   // FIXME
+          setLEDsCO(c.getLC(), c.getLT(), c.getLF(), true
+          // Update setpoint
+          // Note that we are reperposing the radiator-percent-open (rp) field of OTProtocolCC
+          // to hold the set-point in centigrade.
+            setPointC = c.getRP();
           // If relatively early in the cycle then send the response immediately.
           if(timeToHandleMessage()) { sendCC1PollResponse(); }
           }
@@ -931,17 +830,6 @@ void serialStatusReport()
 //      Serial.print(' ');
 //      Serial.print('s'); // Indicate syncing with trailing lower-case 's' in field...
 //      }
-#if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-    // Now show TX ID for secure association.
-    Serial.print(F(" TX ID"));
-    uint8_t idbuf[OTV0P2BASE::OpenTRV_Node_ID_Bytes];
-    getTXID(idbuf);
-    for(uint8_t i = 0; i < V0P2BASE_EE_LEN_ID; ++i)
-      {
-      Serial.print(' ');
-      Serial.print(idbuf[i], HEX);
-      }
-#endif // defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
     Serial.println();
     }
   // Terminate line.
@@ -1027,12 +915,6 @@ void pollCLI(const uint8_t maxSCT, const bool startOfMinute)
       // Avoid showing status as may already be rather a lot of output.
       default: case '?': { /* dumpCLIUsage(maxSCT); */ showStatus = false; break; }
 
-#if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-      // Set new node association (nodes to accept frames from).
-      // Only needed if able to RX and/or some sort of hub.
-      case 'A': { showStatus = OTV0P2BASE::CLI::SetNodeAssoc().doCommand(buf, n); break; }
-#endif // ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
-
       // Exit/deactivate CLI immediately.
       // This should be followed by JUST CR ('\r') OR LF ('\n')
       // else the second will wake the CLI up again.
@@ -1042,11 +924,6 @@ void pollCLI(const uint8_t maxSCT, const bool startOfMinute)
       // Set (non-volatile) HC1 and HC2 for single/primary FHT8V wireless valve under control.
       // Missing values will clear the code entirely (and disable use of the valve).
 //      case 'H': { showStatus = OTRadValve::FHT8VRadValveBase::SetHouseCode(&FHT8V).doCommand(buf, n); break; }    // FIXME
-
-#if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-      // Set secret key.
-      case 'K': { showStatus = OTV0P2BASE::CLI::SetSecretKey(OTRadioLink::SimpleSecureFrame32or0BodyTXV0p2::resetRaw3BytePersistentTXRestartCounterCond).doCommand(buf, n); break; }
-#endif // ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
 
       // Status line and optional smart/scheduled warming prediction request.
       case 'S':
@@ -1280,8 +1157,7 @@ void loop()
     static uint8_t valveOpenPC = 0;
 
     if(TIME_LSD == 2) {
-        const uint8_t targetTempC = 20;
-        updateTargetValvePosition(targetTempC, valveOpenPC);
+        updateTargetValvePosition(valveOpenPC);
     }
 
   // If time to do some trailing processing, CLI, etc...
@@ -1316,9 +1192,9 @@ void loop()
       // The initial minuteCount value can be anywhere in the range [0,3];
       // pick threshold to give user at least a couple of minutes to fit the device
       // if they do so with the battery in place.
-      const bool delayRecalibration = batteryLow || AmbLight.isRoomDark();
+//      const bool delayRecalibration = batteryLow || AmbLight.isRoomDark();
 //      if(valveUI.veryRecentUIControlUse() || (minuteCount >= (delayRecalibration ? 240 : 5)))  // FIXME
-          { ValveDirect.signalValveFitted(); }
+        ValveDirect.signalValveFitted();
       }
   // Provide regular poll to motor driver.
   // May take significant time to run
@@ -1344,4 +1220,3 @@ void loop()
     TIME_LSD = OTV0P2BASE::getSecondsLT(); // Prepare to sleep until start of next full minor cycle.
     }
   }
-
