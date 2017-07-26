@@ -787,17 +787,9 @@ ISR(PCINT2_vect)
 // With care (not accessing EEPROM for example) this can also reject anything with wrong house code.
 static bool FilterRXISR(const volatile uint8_t *buf, volatile uint8_t &buflen)
   {
-#ifndef ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
   if((buflen < 8) || (OTRadioLink::FTp2_CC1PollAndCmd != buf[0])) { return(false); }
   // Filter for only this unit address/housecode as FHT8V.getHC{1,2}() are thread-safe.
   if((housecode1 != buf[1]) || (housecode2 != buf[2])) { return(false); }    // FIXME
-#else
-  // Expect secure frame with 2-byte ID and 32-byte encrypted body.
-  if((buflen < 60) || ((0x80|OTRadioLink::FTp2_CC1PollAndCmd) != buf[0])) { return(false); }
-  // Filter for only this unit address/housecode as FHT8V.getHC{1,2}() are thread-safe.
-  if((buf[1] & 0xf) < 2) { return(false); }
-  if((FHT8V.getHC1() != buf[2]) || (FHT8V.getHC2() != buf[3])) { return(false); }
-#endif // ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
   return(true); // Accept message.
   }
 

@@ -17,11 +17,7 @@ Author(s) / Copyright (s): Deniz Erbilgin 2017
 */
 
 // Uncomment exactly one of the following CONFIG_... lines to select which board is being built for.
-#define CONFIG_REV8_2WAY_COMMS // REV2 cut4 as CC1 hub.
-//#define CONFIG_REV9 // REV9 as CC1 relay, cut 2 of the board.
-
-// IF DEFINED: entire comms model switches to secure.
-//#define ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
+#define CONFIG_REV8_2WAY_COMMS // REV8 as CC1 hub.
 
 #define DEBUG // Uncomment for debug output.
 
@@ -33,9 +29,6 @@ Author(s) / Copyright (s): Deniz Erbilgin 2017
 #include <OTRadValve.h>
 #include <OTProtocolCC.h>
 #include <OTV0p2_CONFIG_REV8.h>
-#if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-#include <OTAESGCM.h>
-#endif
 #include <OTV0p2_Board_IO_Config.h> // I/O pin allocation and setup: include ahead of I/O module headers.
 
 // Force-enable always-on RX if not already so.
@@ -194,22 +187,6 @@ void serialPrintlnBuildVersion()
     OTV0P2BASE::serialPrintlnAndFlush(F(" " __TIME__));
 }
 
-#if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-// TX 2 bytes of ID in each secure frame, corresponding to the FHT8V housecode.
-static constexpr uint8_t lenTXID = 2;
-// Support for secure TX side using FHT8V ID plus 0x80 padding from REV2 hub.
-// (High bits of trailing bytes should be low for traffic TO node whose ID is in header.)
-OTRadioLink::SimpleSecureFrame32or0BodyTXV0p2SuppliedID secureTXState(NULL);
-// Set TX ID for target; two bytes of housecode padded with zeros (for reverse traffic).
-static void setTXID(const uint8_t hc1, const uint8_t hc2)
-  {
-  uint8_t id[OTV0P2BASE::OpenTRV_Node_ID_Bytes];
-  id[0] = hc1;
-  id[1] = hc2;
-  memset(id + 2, 0, OTV0P2BASE::OpenTRV_Node_ID_Bytes - 2);
-  secureTXState.setTXID(id);
-  }
-#endif // defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
 
 void pollIO()
 {
@@ -218,7 +195,6 @@ void pollIO()
     // there will usually be little time to do this
     // before getting an RX overrun or dropped frame.
     PrimaryRadio.poll();
-    return(false);
 }
 
 // Decode and handle inbound raw message (msg[-1] contains the count of bytes received).
@@ -236,65 +212,10 @@ static void decodeAndHandleRawRXedMessage(Print *p, const bool secure, const uin
 #if 0 && defined(DEBUG)
   OTRadioLink::printRXMsg(p, msg-1, msglen+1); // Print len+frame.
 #endif
-
-#if !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
    // For non-secure, check that there enough bytes for expected (fixed) frame size.
    if(msglen < 8) { return; } // Too short to be useful, so ignore.
    const uint8_t *cleartextBody = msg;
    const uint8_t cleartextBodyLen = msglen;
-#else  // !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-  // For length-first OpenTRV secureable-frame format, validate structure of header/frame first.
-  // This is quick and checks for insane/dangerous values throughout.
-  OTRadioLink::SecurableFrameHeader sfh;
-  const uint8_t l = sfh.checkAndDecodeSmallFrameHeader(msg-1, msglen+1);
-  if((0 == l) || !sfh.isSecure()) // Invalid header, or not in secure format.
-    {
-#if 1 && defined(DEBUG)
-DEBUG_SERIAL_PRINTLN_FLASHSTRING("!RX bad secure header");
-#endif
-    return; // FAIL
-    }
-  uint8_t key[16];
-  // Get the 'building' key.
-  if(!OTV0P2BASE::getPrimaryBuilding16ByteSecretKey(key))
-    {
-    DEBUG_SERIAL_PRINTLN_FLASHSTRING("!RX key");
-    return; // FAIL
-    }
-  // Attempt to authenticate (and decrypt) the frame before inspecting content.
-  // Buffer for receiving secure frame body.
-  // (Non-secure frame bodies should be read directly from the frame buffer.)
-  uint8_t secBodyBuf[OTRadioLink::ENC_BODY_SMALL_FIXED_PTEXT_MAX_SIZE];
-  // Body length after any decryption, etc.
-  uint8_t decryptedBodyOutSize = 0;
-  // Check that there is an association/key for the inbound message.
-  uint8_t senderNodeID[OTV0P2BASE::OpenTRV_Node_ID_Bytes];
-  // Look up full ID in associations table,
-  // validate RX message counter,
-  // authenticate and decrypt,
-  // update RX message counter.
-  const uint8_t dfl = OTRadioLink::SimpleSecureFrame32or0BodyRXV0p2::getInstance().decodeSecureSmallFrameSafely(&sfh, msg-1, msglen+1,
-                                          OTAESGCM::fixed32BTextSize12BNonce16BTagSimpleDec_DEFAULT_STATELESS,
-                                          NULL, key,
-                                          secBodyBuf, sizeof(secBodyBuf), decryptedBodyOutSize,
-                                          senderNodeID,
-                                          true);
-  if(0 == dfl)
-    {
-#if 1 // && defined(DEBUG)
-    // Useful brief network diagnostics: a couple of bytes of the claimed ID of rejected frames.
-    // Warnings rather than errors because there may legitimately be multiple disjoint networks.
-    OTV0P2BASE::serialPrintAndFlush(F("?RX auth")); // Missing association or failed auth.
-    if(sfh.getIl() > 0) { OTV0P2BASE::serialPrintAndFlush(' '); OTV0P2BASE::serialPrintAndFlush(sfh.id[0], HEX); }
-    if(sfh.getIl() > 1) { OTV0P2BASE::serialPrintAndFlush(' '); OTV0P2BASE::serialPrintAndFlush(sfh.id[1], HEX); }
-    OTV0P2BASE::serialPrintlnAndFlush();
-#endif
-    return; // FAIL
-    }
-   const uint8_t *cleartextBody = secBodyBuf;
-   const uint8_t cleartextBodyLen = decryptedBodyOutSize;
-#endif // ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
-
   const uint8_t firstByte = msg[0];
   switch(firstByte)
     {
@@ -622,7 +543,7 @@ void resetCLIActiveTimer() { CLITimeoutM = CLI_DEFAULT_TIMEOUT_M; }
 // Returns true if the CLI is active, at least intermittently.
 // Thread-safe.
 bool isCLIActive() { return(0 != CLITimeoutM); }
-#if defined(ENABLE_EXTENDED_CLI) || defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
+#if defined(ENABLE_EXTENDED_CLI)
 static const uint8_t MAXIMUM_CLI_RESPONSE_CHARS = 1 + OTV0P2BASE::CLI::MAX_TYPICAL_CLI_BUFFER;
 #else
 static const uint8_t MAXIMUM_CLI_RESPONSE_CHARS = 1 + OTV0P2BASE::CLI::MIN_TYPICAL_CLI_BUFFER;
@@ -858,7 +779,7 @@ void loop()
 #endif
 
   // Use the zeroth second in each minute to force extra deep device sleeps/resets, etc.
-  const bool second0 = (0 == TIME_LSD);
+  // const bool second0 = (0 == TIME_LSD);
 
   // If time to do some trailing processing, CLI, etc...
   while(timeToHandleMessage())
