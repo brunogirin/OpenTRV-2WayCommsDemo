@@ -18,7 +18,7 @@ Author(s) / Copyright (s): Deniz Erbilgin 2017
 
 #include "OTProtocolCC.h"
 
-#define CONFIG_REV9 // REV9 as CC1 relay, cut 2 of the board.
+#define CONFIG_REV7_2WAY // REV7 as CC1 valve.
 
 // IF DEFINED: entire comms model switches to secure.
 //#define ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
@@ -32,7 +32,7 @@ Author(s) / Copyright (s): Deniz Erbilgin 2017
 #include <OTRFM23BLink.h>
 #include <OTRadValve.h>
 #include <OTProtocolCC.h>
-#include <OTV0p2_CONFIG_REV9.h>
+#include <OTV0p2_CONFIG_REV7.h>
 #if defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
 #include <OTAESGCM.h>
 #endif
@@ -63,6 +63,12 @@ extern void _debug_serial_timestamp();
 #endif // DEBUG
 
 //---------------------
+
+// FIXME
+// Temporary housecode for dev work
+static constexpr uint8_t housecode1 = 70;
+static constexpr uint8_t housecode2 = 04;
+
 
 // Indicate that the system is broken in an obvious way (distress flashing of the main UI LED).
 // DOES NOT RETURN.
@@ -272,9 +278,9 @@ OTRadValve::ModelledRadValveState<binaryOnlyValveControl> radValveState;
 // DORM1/REV7 direct drive motor actuator.
 static constexpr uint8_t m1 = MOTOR_DRIVE_ML;
 static constexpr uint8_t m2 = MOTOR_DRIVE_MR;
-static constexpr uint8_t mi = 0;  // FIXME
-static constexpr uint8_t mc = 0;  // FIXME
-static constexpr uint8_t ms = 0;  // FIXME
+static constexpr uint8_t mi = MOTOR_DRIVE_MI_AIN;
+static constexpr uint8_t mc = MOTOR_DRIVE_MC_AIN;
+static constexpr uint8_t ms = OTRadValve::MOTOR_DRIVE_NSLEEP_UNUSED;
 typedef OTRadValve::ValveMotorDirectV1<
             OTRadValve::ValveMotorDirectV1HardwareDriver,
             m1, m2, mi, mc, ms,
@@ -317,8 +323,7 @@ void updateTargetValvePosition(uint8_t setPointC, uint8_t &valveOpenPC)
 bool sendCC1Alert()
 {
 #if !defined(ENABLE_OTSECUREFRAME_ENCODING_SUPPORT)
-//    OTProtocolCC::CC1Alert a = OTProtocolCC::CC1Alert::make(FHT8V.nvGetHC1(), FHT8V.nvGetHC2());
-    OTProtocolCC::CC1Alert a = OTProtocolCC::CC1Alert::make(0, 0);  // FIXME
+    OTProtocolCC::CC1Alert a = OTProtocolCC::CC1Alert::make(housecode1, housecode2); // FIXME
     if(a.isValid()) // Might be invalid if house codes are, eg if house codes not set.
     {
     uint8_t txbuf[OTProtocolCC::CC1Alert::primary_frame_bytes+1]; // More than large enough for preamble + sync + alert message.
@@ -358,8 +363,8 @@ bool sendCC1PollResponse()
   {
   // Respond to the hub with sensor data.
   // Can use read() for very freshest values at risk of some delay/cost.
-  const uint8_t hc1 = 0; // FHT8V.nvGetHC1();  // FIXME
-  const uint8_t hc2 = 0; // FHT8V.nvGetHC2();  // FIXME
+  const uint8_t hc1 = housecode1; // FHT8V.nvGetHC1();  // FIXME
+  const uint8_t hc2 = housecode2; // FHT8V.nvGetHC2();  // FIXME
   const uint8_t rh = RelHumidity.read() >> 1; // Scale from [0,100] to [0,50] for TX.
   const uint8_t tp = 0; //(uint8_t) constrain(extDS18B20_0.read() >> 3, 0, 199); // Scale to to 1/2C [0,100[ for TX.
   const uint8_t tr = (uint8_t) constrain(TemperatureC16.read() >> 2, 0, 199); // Scale from 1/16C to 1/4C [0,50[ for TX.
@@ -669,8 +674,8 @@ DEBUG_SERIAL_PRINTLN_FLASHSTRING("!RX bad secure header");
       if(c.isValid())
         {
         // Process the message only if it is targetted at this node.
-        const uint8_t hc1 = 0; //FHT8V.nvGetHC1();  // FIXME
-        const uint8_t hc2 = 0; //FHT8V.nvGetHC2();  // FIXME
+        const uint8_t hc1 = housecode1; //FHT8V.nvGetHC1();  // FIXME
+        const uint8_t hc2 = housecode1; //FHT8V.nvGetHC2();  // FIXME
         if((c.getHC1() == hc1) && (c.getHC2() == hc2))
           {
           // Act on the incoming command.
@@ -886,7 +891,7 @@ static bool FilterRXISR(const volatile uint8_t *buf, volatile uint8_t &buflen)
 #ifndef ENABLE_OTSECUREFRAME_ENCODING_SUPPORT
   if((buflen < 8) || (OTRadioLink::FTp2_CC1PollAndCmd != buf[0])) { return(false); }
   // Filter for only this unit address/housecode as FHT8V.getHC{1,2}() are thread-safe.
-//  if((FHT8V.getHC1() != buf[1]) || (FHT8V.getHC2() != buf[2])) { return(false); }    // FIXME
+  if((housecode1 != buf[1]) || (housecode2 != buf[2])) { return(false); }    // FIXME
 #else
   // Expect secure frame with 2-byte ID and 32-byte encrypted body.
   if((buflen < 60) || ((0x80|OTRadioLink::FTp2_CC1PollAndCmd) != buf[0])) { return(false); }
@@ -1275,7 +1280,7 @@ void loop()
     static uint8_t valveOpenPC = 0;
 
     if(TIME_LSD == 2) {
-        const uint8_t targetTempC = 0;
+        const uint8_t targetTempC = 20;
         updateTargetValvePosition(targetTempC, valveOpenPC);
     }
 
@@ -1311,9 +1316,9 @@ void loop()
       // The initial minuteCount value can be anywhere in the range [0,3];
       // pick threshold to give user at least a couple of minutes to fit the device
       // if they do so with the battery in place.
-//      const bool delayRecalibration = batteryLow || AmbLight.isRoomDark();
+      const bool delayRecalibration = batteryLow || AmbLight.isRoomDark();
 //      if(valveUI.veryRecentUIControlUse() || (minuteCount >= (delayRecalibration ? 240 : 5)))  // FIXME
-//          { ValveDirect.signalValveFitted(); }
+          { ValveDirect.signalValveFitted(); }
       }
   // Provide regular poll to motor driver.
   // May take significant time to run
