@@ -205,7 +205,7 @@ void pollIO()
 // This will write any output to the supplied Print object,
 // typically the Serial output (which must be running if so).
 // This routine is NOT allowed to alter in any way the content of the buffer passed.
-static void decodeAndHandleRawRXedMessage(Print *p, const bool secure, const uint8_t * const msg)
+static void decodeAndHandleRawRXedMessage(Print *p, const uint8_t * const msg)
   {
   const uint8_t msglen = msg[-1];
 
@@ -319,7 +319,7 @@ bool handleQueuedMessages(Print *p, bool wakeSerialIfNeeded, OTRadioLink::OTRadi
     if(!neededWaking && wakeSerialIfNeeded && OTV0P2BASE::powerUpSerialIfDisabled<V0P2_UART_BAUD>()) { neededWaking = true; } // FIXME
     // Don't currently regard anything arriving over the air as 'secure'.
     // FIXME: shouldn't have to cast away volatile to process the message content.
-    decodeAndHandleRawRXedMessage(p, false, (const uint8_t *)pb);
+    decodeAndHandleRawRXedMessage(p, (const uint8_t *)pb);
     rl->removeRXMsg();
     // Note that some work has been done.
     workDone = true;
@@ -472,7 +472,7 @@ void serialStatusReport()
 //
 // It is acceptable for extCLIHandler() to alter the buffer passed,
 // eg with strtok_t().
-static bool extCLIHandler(Print *const p, char *const buf, const uint8_t n)
+static bool extCLIHandler(char *const buf, const uint8_t n)
   {
   // If CC1 hub then allow +CC1 ? command to poll a remote relay.
   // Full command is:
@@ -614,7 +614,7 @@ void pollCLI(const uint8_t maxSCT, const bool startOfMinute)
       // eg with strtok_t().
       case '+':
         {
-        const bool success = extCLIHandler(&Serial, buf, n);
+        const bool success = extCLIHandler(buf, n);
         Serial.println(success ? F("OK") : F("FAILED"));
         break;
         }
