@@ -477,6 +477,7 @@ static bool extCLIHandler(char *const buf, const uint8_t n)
   // If CC1 hub then allow +CC1 ? command to poll a remote relay.
   // Full command is:
   //    +CC1 ? hc1 hc2 rp lc lt lf
+    // e.g. +CC1 ? 70 04 20 1 1 1
   // ie six numeric arguments, see below, with out-of-range values coerced (other than housecodes):
 //            // Factory method to create instance.
 //            // Invalid parameters (except house codes) will be coerced into range.
@@ -772,15 +773,50 @@ void loop()
     }
   TIME_LSD = newTLSD;
 
-#if defined(ENABLE_WATCHDOG_SLOW)
   // Reset and immediately re-prime the RTC-based watchdog.
   OTV0P2BASE::resetRTCWatchDog();
   OTV0P2BASE::enableRTCWatchdog(true);
-#endif
 
-  // Use the zeroth second in each minute to force extra deep device sleeps/resets, etc.
-  // const bool second0 = (0 == TIME_LSD);
-
+#if 1  // Force TX once every minute for dev work.
+    // Use the zeroth second in each minute to force extra deep device sleeps/resets, etc.
+    const bool second0 = (0 == TIME_LSD);
+    if (second0) {
+    // If CC1 hub then allow +CC1 ? command to poll a remote relay.
+    // Full command is:
+    //    +CC1 ? hc1 hc2 rp lc lt lf
+    // e.g. +CC1 ? 70 04 10 1 1 1
+    // ie six numeric arguments, see below, with out-of-range values coerced (other than housecodes):
+    //            // Factory method to create instance.
+    //            // Invalid parameters (except house codes) will be coerced into range.
+    //            //   * House code (hc1, hc2) of valve controller that the poll/command is being sent to.
+    //            //   * rad-open-percent     [0,100] 0-100 in 1% steps, percent open approx to set rad valve (rp)
+    //            //   * light-colour         [0,3] bit flags 1==red 2==green (lc) 0 => stop everything
+    //            //   * light-on-time        [1,15] (0 not allowed) 30-450s in units of 30s (lt) ???
+    //            //   * light-flash          [1,3] (0 not allowed) 1==single 2==double 3==on (lf)
+    //            // Returns instance; check isValid().
+    //            static CC1PollAndCommand make(uint8_t hc1, uint8_t hc2,
+    //                                          uint8_t rp,
+    //                                          uint8_t lc, uint8_t lt, uint8_t lf);
+        OTProtocolCC::CC1PollAndCommand q = OTProtocolCC::CC1PollAndCommand::make(
+                70, 04,
+                10,
+                1, 1, 1);
+        if(q.isValid())
+        {
+            uint8_t txbuf[OTProtocolCC::CC1PollAndCommand::primary_frame_bytes+1]; // More than large enough for preamble + sync + alert message.
+            const uint8_t bodylen = q.encodeSimple(txbuf, sizeof(txbuf), true);
+            // Non-secure: send raw frame as-is.
+            // TX at normal power since ACKed and can be repeated if necessary.
+            if(PrimaryRadio.sendRaw(txbuf, bodylen)) {
+                OTV0P2BASE::serialPrintlnAndFlush(F("!TX success"));
+                return(true);
+            } // Success!
+            // Fall-through is failure...
+            OTV0P2BASE::serialPrintlnAndFlush(F("!TX fail"));
+        }
+        return(false); // FAILED if fallen through from above.
+    }
+#endif // 0
   // If time to do some trailing processing, CLI, etc...
   while(timeToHandleMessage())
     {

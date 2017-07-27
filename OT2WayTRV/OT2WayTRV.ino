@@ -297,7 +297,7 @@ ValveDirect_t ValveDirect([](){return(AmbLight.isRoomDark());});
  *               - [x] Get current temperature.
  *          - [x] Set new motor position..
  */
-static uint8_t setPointC = 18;  // Initialise set-point to a reasonable value.
+volatile uint8_t setPointC = 18;  // Initialise set-point to a reasonable value.
 void updateTargetValvePosition(uint8_t &valveOpenPC)
 {
     const uint8_t curTempC16 = TemperatureC16.get();
@@ -355,7 +355,7 @@ bool sendCC1PollResponse()
   // TODO: may need to insert a delay to allow hub to be ready if use of read() above is not enough.
   uint8_t txbuf[OTProtocolCC::CC1PollResponse::primary_frame_bytes+1]; // More than large enough for preamble + sync + alert message.
   const uint8_t bodylen = r.encodeSimple(txbuf, sizeof(txbuf), true);
-#if 1 && defined(DEBUG)
+#if 0 && defined(DEBUG)
   OTV0P2BASE::serialPrintlnAndFlush(F("polled"));
 #endif
   // Non-secure: send raw frame as-is.
@@ -571,19 +571,17 @@ static void decodeAndHandleRawRXedMessage(Print * p, const bool /*secure*/, cons
       if(c.isValid())
         {
         // Process the message only if it is targetted at this node.
-        const uint8_t hc1 = housecode1; //FHT8V.nvGetHC1();  // FIXME
-        const uint8_t hc2 = housecode1; //FHT8V.nvGetHC2();  // FIXME
-        if((c.getHC1() == hc1) && (c.getHC2() == hc2))
+        if((c.getHC1() == housecode1) && (c.getHC2() == housecode2))
           {
+            OTV0P2BASE::serialPrintlnAndFlush("RXed");
           // Act on the incoming command.
           // Note that a poll response will be needed.
           pollResponseNeeded = true;
-          // Set LEDs immediately.
-          setLEDsCO(c.getLC(), c.getLT(), c.getLF(), true
           // Update setpoint
           // Note that we are reperposing the radiator-percent-open (rp) field of OTProtocolCC
           // to hold the set-point in centigrade.
             setPointC = c.getRP();
+
           // If relatively early in the cycle then send the response immediately.
           if(timeToHandleMessage()) { sendCC1PollResponse(); }
           }
@@ -616,6 +614,7 @@ bool handleQueuedMessages(Print *p, bool wakeSerialIfNeeded, OTRadioLink::OTRadi
   // This is to reduce the risk of loop overruns
   // at the risk of delaying some processing
   // or even dropping some incoming messages if queues fill up.
+
   if(!timeToHandleMessage()) { return(false); }
 
   // Deal with any I/O that is queued.
@@ -796,16 +795,13 @@ static bool FilterRXISR(const volatile uint8_t *buf, volatile uint8_t &buflen)
 // Sends a short 1-line CRLF-terminated status report on the serial connection (at 'standard' baud).
 void serialStatusReport()
   {
-#if !defined(ENABLE_FHT8VSIMPLE)
-  OTV0P2BASE::serialPrintlnAndFlush(F("="));
-#else
   // Force sensor read as not polled in main loop for COHEAT... (And flush any serial before messing with clocks, etc.)
   OTV0P2BASE::flushSerialSCTSensitive();
   TemperatureC16.read();
   const bool neededWaking = OTV0P2BASE::powerUpSerialIfDisabled<V0P2_UART_BAUD>();
   // Stats line starts with distinguished marker character '='.
   Serial.print((char) OTV0P2BASE::SERLINE_START_CHAR_STATS);
-//  Serial.print(NominalRadValve.get()); Serial.print('%'); // Target valve position.  // FIXME
+  Serial.print(F("tT")); Serial.print(setPointC); Serial.print('C'); // Target valve position.  // FIXME
   const int temp = TemperatureC16.get();
   Serial.print('@'); Serial.print(temp >> 4); Serial.print('C'); // Unrounded whole degrees C.
       Serial.print(temp & 0xf, HEX); // Show 16ths in hex.
@@ -824,7 +820,6 @@ void serialStatusReport()
   // Ensure that all text is sent before this routine returns, in case any sleep/powerdown follows that kills the UART.
   OTV0P2BASE::flushSerialSCTSensitive();
   if(neededWaking) { OTV0P2BASE::powerDownSerial(); }
-#endif
   }
 
 // Handle CLI extension commands.
@@ -1111,40 +1106,18 @@ void loop()
 //  const bool second0 = (0 == TIME_LSD);
 
     // Run the CC1 relay UI.
-    if(tickUICO(TIME_LSD))
-      {
+//    if(tickUICO(TIME_LSD))
+//      {
 //      showStatus = true;
-      }
-
-  // Try for double TX for more robust conversation with valve?
-//  const bool doubleTXForFTH8V = false;
-  // FHT8V is highest priority and runs first.
-  // ---------- HALF SECOND #0 -----------
-//  bool useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_First(doubleTXForFTH8V); // Time for extra TX before UI.    // FIXME
-//  if(useExtraFHT8VTXSlots)
-//    {
-//    handleQueuedMessages(&Serial, true, &PrimaryRadio);
-//    // ---------- HALF SECOND #1 -----------
-//    useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_Next(doubleTXForFTH8V);
-//    }
-//  if(useExtraFHT8VTXSlots)
-//    {
-//    handleQueuedMessages(&Serial, true, &PrimaryRadio);
-//    // ---------- HALF SECOND #2 -----------
-//    useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_Next(doubleTXForFTH8V);
-//    }
-//  if(useExtraFHT8VTXSlots)
-//    {
-//    handleQueuedMessages(&Serial, true, &PrimaryRadio);
-//    // ---------- HALF SECOND #3 -----------
-//    useExtraFHT8VTXSlots = localFHT8VTRVEnabled() && FHT8V.FHT8VPollSyncAndTX_Next(doubleTXForFTH8V);
-//    }
+//      }
 
     // Naive attempt at adding in valve update  TODO
     static uint8_t valveOpenPC = 0;
 
-    if(TIME_LSD == 2) {
+    if (0 == TIME_LSD) {
         updateTargetValvePosition(valveOpenPC);
+    } else if (2 == TIME_LSD) {
+        pollResponseNeeded = true;
     }
 
   // If time to do some trailing processing, CLI, etc...
