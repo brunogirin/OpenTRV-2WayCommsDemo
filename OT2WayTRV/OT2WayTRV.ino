@@ -58,8 +58,10 @@ extern void _debug_serial_timestamp();
 
 //---------------------
 
-// FIXME
-// Temporary housecode for dev work
+// HOUSECODES!!! This is the unique identifier for the valve.
+// Set these per valve.
+// House codes may be in range [0,255]
+// TODO (DE20170728) Allow setting over the CLI. Removed as implemented in FHT8V driver).
 static constexpr uint8_t housecode1 = 70;
 static constexpr uint8_t housecode2 = 04;
 
@@ -291,7 +293,7 @@ ValveDirect_t ValveDirect([](){return(AmbLight.isRoomDark());});
  * @param   setPointC16: Target temperature in Celsius.
  * @param   valveOpenPC: Current valve position in %. Updated by this routine!
  * @note    - [ ] Valve setup stuff.
- *          - [ ] Get set-point.
+ *          - [x] Get set-point.
  *          - [x] Update ModelledRadValveState.
  *               - [x] Set new set-point.
  *               - [x] Get current temperature.
@@ -337,10 +339,22 @@ static bool pollResponseNeeded;
 // Send a CC1 poll response message with this unit's house code; returns false on failure.
 bool sendCC1PollResponse()
   {
-  // Respond to the hub with sensor data.
-  // Can use read() for very freshest values at risk of some delay/cost.
-  const uint8_t hc1 = housecode1; // FHT8V.nvGetHC1();  // FIXME
-  const uint8_t hc2 = housecode2; // FHT8V.nvGetHC2();  // FIXME
+//    Respond to the hub with sensor data.
+//    Can use read() for very freshest values at risk of some delay/cost.
+//    Full response is:
+//        +CC1 * hc1 hc2 rh tp tr al s w sy
+//    * House code (hc1, hc2) of valve controller that the poll response is being sent from.
+//    * rh: Relative humidity, scaled from [0,100] to [0,50] i.e. 2% per count.
+//    * tp: Ignored. Secondary temperature sensor.
+//    * tr: Temperature reading in range [0,199] in 1/16ths of a C.
+//    * al: Ignored. Ambient light.
+//    * s:  Ignored. Switch toggle state.
+//    * e:  Ignored.
+//    * sy: Valve run state. Returns true if the valve motor driver is running normally.
+//
+//    As for poll and command packet, unused fields have been left as they are to minimise coding changes.
+  const uint8_t hc1 = housecode1;
+  const uint8_t hc2 = housecode2;
   const uint8_t rh = RelHumidity.read() >> 1; // Scale from [0,100] to [0,50] for TX.
   const uint8_t tp = 0; //(uint8_t) constrain(extDS18B20_0.read() >> 3, 0, 199); // Scale to to 1/2C [0,100[ for TX.
   const uint8_t tr = (uint8_t) constrain(TemperatureC16.read() >> 2, 0, 199); // Scale from 1/16C to 1/4C [0,50[ for TX.
@@ -579,8 +593,8 @@ static void decodeAndHandleRawRXedMessage(Print * p, const bool /*secure*/, cons
           pollResponseNeeded = true;
           // Update setpoint
           // Note that we are reperposing the radiator-percent-open (rp) field of OTProtocolCC
-          // to hold the set-point in centigrade.
-            setPointC = c.getRP();
+          // to hold the set-point in centigrade. This is constrained to between 15 and 30 degrees.  // FIXME
+            setPointC = constrain(c.getRP(), 15, 30);
 
           // If relatively early in the cycle then send the response immediately.
           if(timeToHandleMessage()) { sendCC1PollResponse(); }
@@ -1111,12 +1125,15 @@ void loop()
 //      showStatus = true;
 //      }
 
-    // Naive attempt at adding in valve update  TODO
+    // Valve position.
     static uint8_t valveOpenPC = 0;
 
+    // Per minute tasks.
     if (0 == TIME_LSD) {
         updateTargetValvePosition(valveOpenPC);
     } else if (2 == TIME_LSD) {
+        // Force TX once a minute.
+        // FIXME This should probably be reduced for battery-life/etsi reasons.
         pollResponseNeeded = true;
     }
 
