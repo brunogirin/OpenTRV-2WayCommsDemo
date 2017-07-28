@@ -7,7 +7,11 @@ Hub and TRV are split into different source files and secure comms are removed.
     - Make sure to set per valve house-codes on line 61 before compilation.
 
 ## Git Repo Tags
-
+Tag: 20170728-2WayCommsDemo
+Repos:
+- OpenTRV-2WayCommsDemo
+- OTRadioLink
+- OTProtocolCC
 
 ## Radio Protocol:
 - What channel?
